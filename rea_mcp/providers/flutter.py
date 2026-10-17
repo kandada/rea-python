@@ -40,6 +40,12 @@ class FlutterBuildProvider(AnalysisProvider):
                     "Static snapshot fingerprint only; class/URI recovery is out of scope.",
                 ),
             ),
+            CapabilityDescriptor(
+                operation="inspect_dart_aot",
+                provider=_PROVIDER,
+                effects=CapabilityEffects(),
+                limitations=("Static AOT snapshot facts only; no Dart class recovery.",),
+            ),
         )
 
     def supports(self, target: BinaryTarget) -> TargetSupport:
@@ -55,7 +61,7 @@ class FlutterBuildProvider(AnalysisProvider):
         profile: AnalysisProfile | None,
     ) -> Result[AnalysisExecution, AnalysisError]:
         del parameters, profile
-        if operation != "identify_flutter_build":
+        if operation not in ("identify_flutter_build", "inspect_dart_aot"):
             return err(
                 AnalysisInputError(
                     operation=operation, message=f"unsupported operation {operation}"
@@ -92,6 +98,7 @@ class FlutterBuildProvider(AnalysisProvider):
             AnalysisExecution(
                 result={
                     "is_flutter": detected,
+                    "is_dart_aot": detected,
                     "abis": abis,
                     "consistent_snapshot": len(hashes) == 1 if hashes else False,
                     "snapshot_hashes": sorted(hashes),

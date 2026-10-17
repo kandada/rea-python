@@ -71,6 +71,15 @@ class MachoSegment:
 
 
 @dataclass
+class Machosection:
+    name: str
+    segment: str
+    addr: int
+    size: int
+    offset: int
+
+
+@dataclass
 class MachoInfo:
     endian: str
     is_64: bool
@@ -84,6 +93,7 @@ class MachoInfo:
     build_tool: str | None = None
     min_os: str | None = None
     segments: list[MachoSegment] = field(default_factory=list)
+    sections: list[Machosection] = field(default_factory=list)
     dylibs: list[str] = field(default_factory=list)
     symbols: list[str] = field(default_factory=list)
     symbols_truncated: bool = False
@@ -162,6 +172,32 @@ def _parse_load_command(
         except struct.error:
             return
         info.segments.append(MachoSegment(segname, vmaddr, vmsize, fileoff, filesize, initprot))
+        try:
+            nsects = struct.unpack_from(f"{endian}I", data, base + (64 if is_64 else 48))[0]
+        except struct.error:
+            nsects = 0
+        section_base = offset + (72 if is_64 else 56)
+        section_size = 80 if is_64 else 68
+        for index in range(nsects):
+            start = section_base + index * section_size
+            try:
+                sectname = (
+                    data[start : start + 16].split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+                )
+                segment_name = (
+                    data[start + 16 : start + 32]
+                    .split(b"\x00", 1)[0]
+                    .decode("utf-8", errors="replace")
+                )
+                if is_64:
+                    addr, size = struct.unpack_from(f"{endian}QQ", data, start + 32)
+                    section_offset = struct.unpack_from(f"{endian}I", data, start + 48)[0]
+                else:
+                    addr, size = struct.unpack_from(f"{endian}II", data, start + 32)
+                    section_offset = struct.unpack_from(f"{endian}I", data, start + 40)[0]
+            except struct.error:
+                break
+            info.sections.append(Machosection(sectname, segment_name, addr, size, section_offset))
     elif cmd == LC_MAIN:
         try:
             (entryoff,) = struct.unpack_from(f"{endian}Q", data, base)
@@ -356,6 +392,30 @@ def macho_mitigations(info: MachoInfo) -> dict[str, bool]:
 _FAT_MAGICS = {b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
 
 
+def fat_slices(
+    data: bytes | mmap.mmap,
+) -> list[tuple[str | None, int, int]] | None:
+    """Return ``(architecture, offset, size)`` for each universal slice."""
+
+    if data[:4] not in _FAT_MAGICS:
+        return None
+    if len(data) < 8:
+        return None
+    (nfat,) = struct.unpack_from(">I", data, 4)
+    if nfat == 0 or nfat > 64:
+        return None
+    slices: list[tuple[str | None, int, int]] = []
+    for index in range(nfat):
+        base = 8 + index * 20
+        if base + 20 > len(data):
+            break
+        cpu_type, _cpu_subtype, offset, size, _align = struct.unpack_from(">IIIII", data, base)
+        if offset + size > len(data):
+            continue
+        slices.append((MACHO_CPUS.get(cpu_type & 0xFFFFFFFF), offset, size))
+    return slices
+
+
 def parse_fat_macho(data: bytes | mmap.mmap) -> list[tuple[str | None, bytes]] | None:
     """Return ``(architecture, slice_bytes)`` for a universal (fat) Mach-O."""
 
@@ -383,6 +443,7 @@ __all__ = [
     "MACHO_CPUS",
     "MachoInfo",
     "MachoSegment",
+    "fat_slices",
     "macho_mitigations",
     "parse_fat_macho",
     "parse_macho",

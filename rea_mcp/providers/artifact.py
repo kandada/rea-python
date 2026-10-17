@@ -17,10 +17,28 @@ from ..domain.result import Result, err, ok
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .registry import TargetSupport
 
-_PROVIDER = ProviderIdentity(id="artifacts", name="REA-Python artifact inventory", version="1")
+_PROVIDER = ProviderIdentity(id="artifacts", name="rea-mcp artifact inventory", version="1")
 _SUPPORTED = {"zip", "apk", "asar", "directory", "file"}
 _MAX_DIGEST_BYTES = 64 * 1024 * 1024
 _MAX_ENTRIES = 20000
+_DIGEST_BUDGET = 256 * 1024 * 1024
+
+
+class _DigestBudget:
+    """Bound total bytes hashed per inventory so a huge archive stays cheap."""
+
+    def __init__(self, total: int = _DIGEST_BUDGET) -> None:
+        self.remaining = total
+        self.exhausted = False
+
+    def allows(self, size: int) -> bool:
+        if size > _MAX_DIGEST_BYTES or size > self.remaining:
+            self.exhausted = True
+            return False
+        return True
+
+    def take(self, size: int) -> None:
+        self.remaining -= size
 
 
 class ArtifactProvider(AnalysisProvider):
@@ -85,6 +103,7 @@ def _entry(name: str, size: int, digest: str | None = None) -> dict[str, Any]:
 
 def _inventory_zip(path: Path) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
+    budget = _DigestBudget()
     with zipfile.ZipFile(path) as archive:
         infos = sorted(archive.infolist(), key=lambda info: info.filename)
         truncated = len(infos) > _MAX_ENTRIES
@@ -92,43 +111,54 @@ def _inventory_zip(path: Path) -> dict[str, Any]:
             if info.is_dir():
                 continue
             digest: str | None = None
-            if info.file_size <= _MAX_DIGEST_BYTES:
+            if budget.allows(info.file_size):
                 digest = sha256_hex(archive.read(info.filename))
+                budget.take(info.file_size)
             entries.append(_entry(info.filename, info.file_size, digest))
     return {
         "format": "zip",
         "entries": entries,
         "entry_count": len(entries),
         "truncated": truncated,
+        "digests_truncated": budget.exhausted,
     }
 
 
 def _inventory_tar(path: Path) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
+    budget = _DigestBudget()
     with tarfile.open(path) as archive:
         members = sorted(archive.getmembers(), key=lambda member: member.name)
         for member in members[:_MAX_ENTRIES]:
             if not member.isfile():
                 continue
             digest: str | None = None
-            if 0 <= member.size <= _MAX_DIGEST_BYTES:
+            if member.size >= 0 and budget.allows(member.size):
                 extracted = archive.extractfile(member)
                 if extracted is not None:
                     digest = sha256_hex(extracted.read())
+                    budget.take(member.size)
             entries.append(_entry(member.name, member.size, digest))
-    return {"format": "tar", "entries": entries, "entry_count": len(entries)}
+    return {
+        "format": "tar",
+        "entries": entries,
+        "entry_count": len(entries),
+        "digests_truncated": budget.exhausted,
+    }
 
 
 def _inventory_directory(path: Path) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
+    budget = _DigestBudget()
     for child in sorted(path.rglob("*")):
         if not child.is_file():
             continue
         rel = child.relative_to(path).as_posix()
         size = child.stat().st_size
         digest: str | None = None
-        if size <= _MAX_DIGEST_BYTES:
+        if budget.allows(size):
             digest = sha256_hex(child.read_bytes())
+            budget.take(size)
         entries.append(_entry(rel, size, digest))
         if len(entries) >= _MAX_ENTRIES:
             break
@@ -137,6 +167,7 @@ def _inventory_directory(path: Path) -> dict[str, Any]:
         "entries": entries,
         "entry_count": len(entries),
         "truncated": len(entries) >= _MAX_ENTRIES,
+        "digests_truncated": budget.exhausted,
     }
 
 

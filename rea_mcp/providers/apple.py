@@ -178,4 +178,148 @@ def _embedded_strings(data: bytes, minimum: int = 4) -> list[str]:
     return result
 
 
-__all__ = ["AssetCatalogProvider", "KeyedArchiveProvider"]
+class EntitlementsProvider(AnalysisProvider):
+    _IDENTITY = ProviderIdentity(id="entitlements", name="rea-mcp entitlements", version="1")
+
+    def identity(self) -> ProviderIdentity:
+        return self._IDENTITY
+
+    def capabilities(self) -> tuple[CapabilityDescriptor, ...]:
+        return (
+            CapabilityDescriptor(
+                operation="inspect_entitlements",
+                provider=self._IDENTITY,
+                effects=CapabilityEffects(),
+                limitations=("Entitlement values are returned verbatim from the plist.",),
+            ),
+        )
+
+    def supports(self, target: BinaryTarget) -> TargetSupport:
+        if target.format == "plist":
+            return TargetSupport("supported")
+        return TargetSupport("unsupported", reason="not a plist", code="target_format_unsupported")
+
+    def analyze(
+        self,
+        operation: str,
+        target: BinaryTarget,
+        parameters: dict[str, Any],
+        profile: AnalysisProfile | None,
+    ) -> Result[AnalysisExecution, AnalysisError]:
+        del profile, parameters
+        if operation != "inspect_entitlements":
+            return err(
+                AnalysisInputError(
+                    operation=operation, message=f"unsupported operation {operation}"
+                )
+            )
+        try:
+            with open(target.path, "rb") as handle:
+                parsed = plistlib.loads(handle.read())
+        except (plistlib.InvalidFileException, ValueError, OSError) as cause:
+            return err(AnalysisInputError(operation=operation, message=str(cause)))
+        if not isinstance(parsed, dict):
+            return ok(
+                AnalysisExecution(
+                    result={"is_entitlements": False, "entitlements": {}},
+                    provider=self._IDENTITY,
+                    limitations=("Not an entitlements dictionary.",),
+                )
+            )
+        entitlements = {str(key): value for key, value in parsed.items()}
+        return ok(
+            AnalysisExecution(
+                result={
+                    "is_entitlements": True,
+                    "entitlement_count": len(entitlements),
+                    "entitlements": entitlements,
+                },
+                provider=self._IDENTITY,
+            )
+        )
+
+
+class InterfaceBuilderProvider(AnalysisProvider):
+    """Project a compiled Interface Builder archive (.nib/.storyboardc)."""
+
+    _IDENTITY = ProviderIdentity(
+        id="interface-builder", name="rea-mcp Interface Builder", version="1"
+    )
+
+    def identity(self) -> ProviderIdentity:
+        return self._IDENTITY
+
+    def capabilities(self) -> tuple[CapabilityDescriptor, ...]:
+        return (
+            CapabilityDescriptor(
+                operation="inspect_interface_builder",
+                provider=self._IDENTITY,
+                effects=CapabilityEffects(),
+                limitations=(
+                    "Object/class inventory only; the view hierarchy is not reconstructed.",
+                ),
+            ),
+        )
+
+    def supports(self, target: BinaryTarget) -> TargetSupport:
+        if target.format == "plist":
+            return TargetSupport("supported")
+        return TargetSupport(
+            "unsupported", reason="not a nib/keyed archive", code="target_format_unsupported"
+        )
+
+    def analyze(
+        self,
+        operation: str,
+        target: BinaryTarget,
+        parameters: dict[str, Any],
+        profile: AnalysisProfile | None,
+    ) -> Result[AnalysisExecution, AnalysisError]:
+        del profile, parameters
+        if operation != "inspect_interface_builder":
+            return err(
+                AnalysisInputError(
+                    operation=operation, message=f"unsupported operation {operation}"
+                )
+            )
+        try:
+            with open(target.path, "rb") as handle:
+                parsed = plistlib.loads(handle.read())
+        except (plistlib.InvalidFileException, ValueError, OSError) as cause:
+            return err(AnalysisInputError(operation=operation, message=str(cause)))
+        objects = parsed.get("$objects", []) if isinstance(parsed, dict) else []
+        if not isinstance(objects, list) or not any(
+            isinstance(obj, dict) and "$classname" in obj for obj in objects
+        ):
+            return ok(
+                AnalysisExecution(
+                    result={"is_interface_builder": False},
+                    provider=self._IDENTITY,
+                    limitations=("Not an Interface Builder keyed archive.",),
+                )
+            )
+        class_names = sorted(
+            {
+                obj["$classname"]
+                for obj in objects
+                if isinstance(obj, dict) and isinstance(obj.get("$classname"), str)
+            }
+        )
+        return ok(
+            AnalysisExecution(
+                result={
+                    "is_interface_builder": True,
+                    "object_count": len(objects),
+                    "class_names": class_names,
+                },
+                provider=self._IDENTITY,
+            )
+        )
+
+
+__all__ = [
+    "AssetCatalogProvider",
+    "EntitlementsProvider",
+    "InterfaceBuilderProvider",
+    "KeyedArchiveProvider",
+]

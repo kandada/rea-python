@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Any, NoReturn
 
@@ -24,7 +25,18 @@ def emit_json(payload: Any, *, force: bool = False) -> None:
         text = json.dumps(payload, indent=2, ensure_ascii=False)
     else:
         text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    sys.stdout.write(text + "\n")
+    try:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader closed the pipe (e.g. `| head`). Silence the interpreter's
+        # shutdown error and exit with the conventional SIGPIPE status.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+        raise SystemExit(141) from None
 
 
 def emit_error(error: AnalysisError) -> None:

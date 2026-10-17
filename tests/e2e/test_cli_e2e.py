@@ -242,3 +242,15 @@ def test_version_flag() -> None:
     proc = run_cli(["--version"])
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == __version__
+
+
+def test_record_unknown_cli(elf_file: Path) -> None:
+    payload = cli_json(["record-unknown", str(elf_file), "--question", "q", "--domain", "d"])
+    assert payload["unknown_id"].startswith("unk_")
+
+
+def test_snapshot_export_cli(elf_file: Path, tmp_path: Path) -> None:
+    destination = tmp_path / "snap.json"
+    payload = cli_json(["snapshot-export", str(elf_file), str(destination)])
+    assert destination.is_file()
+    assert payload["path"] == str(destination)

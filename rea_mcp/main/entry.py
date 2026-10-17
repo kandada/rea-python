@@ -23,7 +23,17 @@ def cli_main() -> None:
         cleaned.append(arg)
     sys.argv = [sys.argv[0], *cleaned]
 
-    app()
+    try:
+        app()
+    except BrokenPipeError:
+        try:
+            import os
+
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+        raise SystemExit(141) from None
 
 
 def main() -> None:

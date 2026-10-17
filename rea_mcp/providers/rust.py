@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import mmap
 import zlib
-from pathlib import Path
 from typing import Any, cast
 
 from ..domain.analysis_error import AnalysisError, AnalysisInputError
@@ -19,6 +18,7 @@ from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .formats.elf import parse_elf
+from .formats.io import open_target
 from .formats.pe import parse_pe
 from .registry import TargetSupport
 
@@ -66,11 +66,11 @@ class RustBinaryProvider(AnalysisProvider):
                 )
             )
         try:
-            data = Path(target.path).read_bytes()
+            with open_target(target.path) as data:
+                section = _extract_section(data, target.format)
         except OSError as cause:
             return err(AnalysisInputError(operation=operation, message=str(cause)))
 
-        section = _extract_section(data, target.format)
         if section is None:
             return ok(
                 AnalysisExecution(

@@ -15,7 +15,7 @@ pytestmark = pytest.mark.mcp
 async def test_lists_full_tool_catalog() -> None:
     async with mcp_client() as client:
         tools = await client.list_tools()
-    assert len(tools) == 46
+    assert len(tools) == 232
     assert {"open_binary", "inspect_binary_layout", "doctor", "compare_evidence"} <= set(tools)
 
 
@@ -145,3 +145,32 @@ async def test_sequential_targets(elf_file: Path, sqlite_file: Path) -> None:
         ] == "elf"
         await client.call("open_binary", {"path": str(sqlite_file)})
         assert (await client.call("inspect_sqlite_database", {}))["normalized_result"]["tables"]
+
+
+async def test_unknowns_round_trip(elf_file: Path) -> None:
+    async with mcp_client() as client:
+        await client.call("open_binary", {"path": str(elf_file)})
+        recorded = await client.call(
+            "record_unknown", {"question": "Is it reachable?", "domain": "reachability"}
+        )
+        unknown_id = recorded["unknown_id"]
+        listed = await client.call("list_unknowns", {})
+        assert any(item["unknown_id"] == unknown_id for item in listed["unknowns"])
+        updated = await client.call(
+            "update_unknown", {"unknown_id": unknown_id, "status": "investigating"}
+        )
+        assert updated["revision"] == 2
+
+
+async def test_snapshot_round_trip(elf_file: Path, tmp_path: Path) -> None:
+    destination = tmp_path / "snap.json"
+    async with mcp_client() as client:
+        exported = await client.call(
+            "snapshot_export", {"path": str(elf_file), "out": str(destination)}
+        )
+        assert destination.is_file()
+        assert exported["path"] == str(destination)
+        imported = await client.call(
+            "snapshot_import", {"path": str(elf_file), "source": str(destination)}
+        )
+        assert imported["imported"] is True

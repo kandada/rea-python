@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rea-mcp"
-version = "0.1.3"
+version = "0.1.5"
 description = "rea-mcp - reverse engineer anything from your terminal or agent, with one CLI and MCP server."
 readme = "README.md"
 license = "MIT"
@@ -69,7 +69,7 @@ include = ["rea*"]
 exclude = ["rea_mcp.tests*", "tests*"]
 
 [tool.setuptools.package-data]
-rea_mcp = ["py.typed"]
+rea_mcp = ["py.typed", "data/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

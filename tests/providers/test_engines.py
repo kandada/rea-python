@@ -14,8 +14,16 @@ import pytest
 
 from rea_mcp.composition.factories import build_providers
 from rea_mcp.domain.binary_target import parse_binary_target
+from rea_mcp.providers.android_deep import AndroidDeepProvider
 from rea_mcp.providers.base import AnalysisProvider
-from rea_mcp.providers.engines import AdbProvider, ApktoolProvider, KunaProvider, SignalProvider
+from rea_mcp.providers.debug_sessions import DebugSessionProvider
+from rea_mcp.providers.engines import (
+    AdbProvider,
+    ApktoolProvider,
+    JadxProvider,
+    KunaProvider,
+    SignalProvider,
+)
 from rea_mcp.providers.hopper import HopperProvider
 from rea_mcp.providers.optional_engines import (
     BrowserProvider,
@@ -25,6 +33,7 @@ from rea_mcp.providers.optional_engines import (
     JebProvider,
     RecordedCrashProvider,
 )
+from rea_mcp.providers.rizin import RizinProvider
 
 ENGINES: list[AnalysisProvider] = [
     ApktoolProvider(),
@@ -78,9 +87,13 @@ def test_unavailable_reports_capability_error(provider: AnalysisProvider, elf_fi
 
 
 @pytest.mark.real_engine
-@pytest.mark.skipif(not _available(ApktoolProvider()), reason="requires apktool + JRE")
-def test_apktool_real(apk_file: Path) -> None:
-    result = ApktoolProvider().analyze("decode_android_resources", _target(apk_file), {}, None)
+@pytest.mark.skipif(
+    not (_available(ApktoolProvider()) and os.environ.get("REA_APK_FIXTURE")),
+    reason="requires apktool + REA_APK_FIXTURE (a real APK)",
+)
+def test_apktool_real() -> None:
+    fixture = Path(os.environ["REA_APK_FIXTURE"])
+    result = ApktoolProvider().analyze("decode_android_resources", _target(fixture), {}, None)
     assert result.ok
     assert result.value.result["file_count"] >= 1
 
@@ -92,7 +105,7 @@ def test_apktool_real(apk_file: Path) -> None:
 def test_adb_real_devices(elf_file: Path) -> None:
     result = AdbProvider().analyze("list_adb_devices", _target(elf_file), {}, None)
     assert result.ok
-    assert result.value.result["lines"]
+    assert "devices" in result.value.result
 
 
 @pytest.mark.real_engine
@@ -116,11 +129,15 @@ def test_kuna_real(elf_file: Path) -> None:
 
 
 @pytest.mark.real_engine
-@pytest.mark.skipif(not _available(GhidraProvider()), reason="requires pyhidra + Ghidra + JDK")
-def test_ghidra_real(elf_file: Path) -> None:
-    result = GhidraProvider().analyze("ghidra_analyze", _target(elf_file), {}, None)
+@pytest.mark.skipif(
+    not (_available(GhidraProvider()) and os.environ.get("REA_ELF_FIXTURE")),
+    reason="requires pyhidra + Ghidra + JDK + REA_ELF_FIXTURE (a real ELF)",
+)
+def test_ghidra_real() -> None:
+    fixture = Path(os.environ["REA_ELF_FIXTURE"])
+    result = GhidraProvider().analyze("ghidra_analyze", _target(fixture), {}, None)
     assert result.ok
-    assert "function_count" in result.value.result
+    assert result.value.result["function_count"] >= 1
 
 
 @pytest.mark.real_engine
@@ -131,13 +148,29 @@ def test_frida_real_devices(elf_file: Path) -> None:
     assert isinstance(result.value.result["devices"], list)
 
 
+def _browser_present() -> bool:
+    candidates = [
+        Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")),
+        Path.home() / ".cache" / "ms-playwright",
+        Path.home() / "Library" / "Caches" / "ms-playwright",
+    ]
+    return any(str(path) and any(path.glob("chromium-*")) for path in candidates if path)
+
+
 @pytest.mark.real_engine
 @pytest.mark.skipif(
-    not (_available(BrowserProvider()) and os.environ.get("REA_BROWSER_TEST_URL")),
-    reason="requires REA_BROWSER_EXECUTABLE + playwright + REA_BROWSER_TEST_URL",
+    not (_available(BrowserProvider()) and _browser_present()),
+    reason="requires playwright + an installed browser",
 )
-def test_browser_real(elf_file: Path) -> None:
-    url = os.environ["REA_BROWSER_TEST_URL"]
+def test_browser_real(elf_file: Path, tmp_path: Path) -> None:
+    url = os.environ.get("REA_BROWSER_TEST_URL")
+    if not url:
+        page = tmp_path / "page.html"
+        page.write_text(
+            "<html><head><title>REA Test Page</title></head><body></body></html>",
+            encoding="utf-8",
+        )
+        url = page.as_uri()
     result = BrowserProvider().analyze("observe_web_page", _target(elf_file), {"url": url}, None)
     assert result.ok
     assert result.value.result["url"]
@@ -155,3 +188,411 @@ def test_recorded_crash_real() -> None:
         "inspect_recorded_crash", _target(core), {"executable": executable}, None
     )
     assert result.ok
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(
+    not (_available(JadxProvider()) and os.environ.get("REA_APK_FIXTURE")),
+    reason="requires jadx + REA_APK_FIXTURE (a real APK)",
+)
+def test_jadx_real() -> None:
+    fixture = Path(os.environ["REA_APK_FIXTURE"])
+    result = JadxProvider().analyze("decompile_android_apk", _target(fixture), {}, None)
+    assert result.ok
+    assert result.value.result["java_file_count"] >= 1
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(
+    not (_available(ApktoolProvider()) and os.environ.get("REA_APK_FIXTURE")),
+    reason="requires apktool + REA_APK_FIXTURE (a real APK)",
+)
+def test_apktool_smali_real() -> None:
+    fixture = Path(os.environ["REA_APK_FIXTURE"])
+    result = ApktoolProvider().analyze("decode_android_smali", _target(fixture), {}, None)
+    assert result.ok
+    assert result.value.result["smali_count"] >= 1
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(not _available(FridaProvider()), reason="requires the optional frida package")
+def test_frida_real_processes(elf_file: Path) -> None:
+    result = FridaProvider().analyze("list_frida_processes", _target(elf_file), {}, None)
+    assert result.ok
+    assert isinstance(result.value.result["processes"], list)
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(not _available(IdaProvider()), reason="requires REA_IDA_MCP_URL")
+def test_ida_real(elf_file: Path) -> None:
+    result = IdaProvider().analyze("ida_analyze", _target(elf_file), {}, None)
+    assert result.ok
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(not _available(JebProvider()), reason="requires REA_JEB_MCP_URL")
+def test_jeb_real(elf_file: Path) -> None:
+    result = JebProvider().analyze("jeb_analyze", _target(elf_file), {}, None)
+    assert result.ok
+
+
+def test_ida_mcp_stdio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, elf_file: Path) -> None:
+    import json
+    import sys
+
+    script = tmp_path / "ida_fake.py"
+    script.write_text(
+        "from mcp.server.fastmcp import FastMCP\n"
+        'server = FastMCP("ida-fake")\n'
+        '@server.tool(name="get_metadata")\n'
+        "def get_metadata() -> dict:\n"
+        '    return {"arch": "x86_64", "name": "demo"}\n'
+        '@server.tool(name="lookup_funcs")\n'
+        "def lookup_funcs(queries: list[str]) -> dict:\n"
+        '    return {"functions": [{"name": queries[0], "address": "0x1000"}]}\n'
+        '@server.tool(name="decompile_function")\n'
+        "def decompile_function(address: str) -> dict:\n"
+        '    return {"pseudocode": f"// decompiled {address}"}\n'
+        '@server.tool(name="list_functions")\n'
+        "def list_functions(offset: int = 0, count: int = 100) -> dict:\n"
+        '    return {"functions": [{"name": "main", "address": "0x1000"}]}\n'
+        '@server.tool(name="get_xrefs_to")\n'
+        "def get_xrefs_to(address: str) -> dict:\n"
+        '    return {"xrefs": [{"from": "0x2000", "to": address}]}\n'
+        'if __name__ == "__main__":\n'
+        '    server.run(transport="stdio")\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / "ida.json"
+    config.write_text(
+        json.dumps(
+            {"mcpServers": {"ida-pro-mcp": {"command": sys.executable, "args": [str(script)]}}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REA_IDA_MCP_CONFIG", str(config))
+    target = _target(elf_file)
+    metadata = IdaProvider().analyze("ida_analyze", target, {}, None)
+    assert metadata.ok
+    assert metadata.value.result["arch"] == "x86_64"
+    decompiled = IdaProvider().analyze("ida_decompile", target, {"function": "main"}, None)
+    assert decompiled.ok
+    assert "decompiled 0x1000" in decompiled.value.result["pseudocode"]
+
+
+def _fake_script(tmp_path: Path, name: str, body: str) -> Path:
+    script = tmp_path / name
+    script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+_APKTOOL_FAKE = """
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; fi
+  prev="$arg"
+done
+mkdir -p "$out/res/values" "$out/smali/com/example"
+printf '<resources/>\\n' > "$out/res/values/strings.xml"
+printf '.class public Lcom/example/Main;\\n' > "$out/smali/com/example/Main.smali"
+printf '<manifest/>\\n' > "$out/AndroidManifest.xml"
+"""
+
+_JADX_FAKE = """
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-d" ]; then out="$arg"; fi
+  prev="$arg"
+done
+mkdir -p "$out/sources/com/example"
+printf 'package com.example; public class Main {}\\n' > "$out/sources/com/example/Main.java"
+"""
+
+_ADB_FAKE = """
+if [ "$1" = "-s" ]; then shift 2; fi
+if [ "$1" = "devices" ]; then
+  echo "List of devices attached"
+  echo "emulator-5554 device product:sdk model:Pixel"
+  exit 0
+fi
+if [ "$1" = "shell" ]; then
+  shift
+  if [ "$1" = "pm" ] && [ "$2" = "list" ]; then
+    echo "package:com.example.app"
+    exit 0
+  fi
+  if [ "$1" = "dumpsys" ]; then
+    echo "Package [com.example.app]"
+    echo "versionName=1.0"
+    exit 0
+  fi
+  echo "shell-output:$*"
+  exit 0
+fi
+exit 0
+"""
+
+
+def test_apktool_decode_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, apk_file: Path
+) -> None:
+    script = _fake_script(tmp_path, "apktool", _APKTOOL_FAKE)
+    monkeypatch.setenv("REA_APKTOOL_COMMAND", str(script))
+    resources = ApktoolProvider().analyze("decode_android_resources", _target(apk_file), {}, None)
+    assert resources.ok
+    assert resources.value.result["file_count"] >= 3
+    smali = ApktoolProvider().analyze("decode_android_smali", _target(apk_file), {}, None)
+    assert smali.ok
+    assert smali.value.result["smali_count"] == 1
+    assert smali.value.result["manifest_decoded"] is True
+    assert smali.value.result["resource_files"] >= 1
+
+
+def test_jadx_decompile_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, apk_file: Path
+) -> None:
+    script = _fake_script(tmp_path, "jadx", _JADX_FAKE)
+    monkeypatch.setenv("REA_JADX", str(script))
+    apk = JadxProvider().analyze("decompile_android_apk", _target(apk_file), {}, None)
+    assert apk.ok
+    assert apk.value.result["java_file_count"] == 1
+    decompiled = JadxProvider().analyze(
+        "decompile_android_class",
+        _target(apk_file),
+        {"class": "com.example.Main"},
+        None,
+    )
+    assert decompiled.ok
+    assert "class Main" in decompiled.value.result["source"]
+
+
+def test_adb_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, elf_file: Path) -> None:
+    script = _fake_script(tmp_path, "adb", _ADB_FAKE)
+    monkeypatch.setenv("REA_ADB_PATH", str(script))
+    devices = AdbProvider().analyze("list_adb_devices", _target(elf_file), {}, None)
+    assert devices.ok
+    assert devices.value.result["devices"][0]["serial"] == "emulator-5554"
+    packages = AdbProvider().analyze(
+        "list_adb_packages", _target(elf_file), {"serial": "emulator-5554"}, None
+    )
+    assert packages.ok
+    assert packages.value.result["packages"][0]["package"] == "com.example.app"
+    info = AdbProvider().analyze(
+        "android_app_info",
+        _target(elf_file),
+        {"serial": "emulator-5554", "package": "com.example.app"},
+        None,
+    )
+    assert info.ok
+    assert any("Package" in line for line in info.value.result["lines"])
+    shell = AdbProvider().analyze(
+        "adb_shell",
+        _target(elf_file),
+        {"command": ["getprop", "ro.build.version.sdk"]},
+        None,
+    )
+    assert shell.ok
+    assert shell.value.result["lines"] == ["shell-output:getprop ro.build.version.sdk"]
+
+
+def test_ghidra_analyze_with_fake_pyhidra(monkeypatch: pytest.MonkeyPatch, elf_file: Path) -> None:
+    import sys
+    import types
+
+    class _Function:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def getName(self) -> str:
+            return self._name
+
+    class _FunctionManager:
+        def getFunctions(self, forward: bool) -> list[_Function]:
+            del forward
+            return [_Function("main"), _Function("helper")]
+
+    class _Language:
+        def toString(self) -> str:
+            return "x86:LE:64:default"
+
+    class _Program:
+        def getLanguageID(self) -> _Language:
+            return _Language()
+
+        def getFunctionManager(self) -> _FunctionManager:
+            return _FunctionManager()
+
+    class _FlatApi:
+        def getCurrentProgram(self) -> _Program:
+            return _Program()
+
+        def getFunction(self, name: str) -> None:
+            del name
+            return None
+
+    class _Context:
+        def __enter__(self) -> _FlatApi:
+            return _FlatApi()
+
+        def __exit__(self, *args: object) -> bool:
+            del args
+            return False
+
+    fake_pyhidra = types.SimpleNamespace(open_program=lambda path: _Context())
+    monkeypatch.setitem(sys.modules, "pyhidra", fake_pyhidra)
+    monkeypatch.setattr(
+        "rea_mcp.providers.optional_engines.optional_import",
+        lambda name: fake_pyhidra if name == "pyhidra" else None,
+    )
+    result = GhidraProvider().analyze("ghidra_analyze", _target(elf_file), {}, None)
+    assert result.ok
+    assert result.value.result["language"] == "x86:LE:64:default"
+    assert result.value.result["function_count"] == 2
+    assert result.value.result["functions"] == ["main", "helper"]
+
+
+def test_jeb_mcp_http(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, elf_file: Path) -> None:
+    import importlib.util
+    import socket
+    import subprocess
+    import sys
+    import time
+
+    if importlib.util.find_spec("uvicorn") is None:
+        pytest.skip("uvicorn is unavailable")
+
+    script = tmp_path / "jeb_fake.py"
+    script.write_text(
+        "import sys\n"
+        "import uvicorn\n"
+        "from mcp.server.fastmcp import FastMCP\n"
+        'server = FastMCP("jeb-fake")\n'
+        '@server.tool(name="get_client_information")\n'
+        "def get_client_information() -> dict:\n"
+        '    return {"engine": "jeb", "version": "5"}\n'
+        '@server.tool(name="open_project")\n'
+        "def open_project(path: str) -> dict:\n"
+        '    return {"project": path}\n'
+        '@server.tool(name="list_units")\n'
+        "def list_units() -> dict:\n"
+        '    return {"units": ["MainActivity"]}\n'
+        '@server.tool(name="decompile_code_item")\n'
+        "def decompile_code_item(item: str) -> dict:\n"
+        '    return {"source": f"// {item}"}\n'
+        'if __name__ == "__main__":\n'
+        '    uvicorn.run(server.streamable_http_app(), host="127.0.0.1", port=int(sys.argv[1]), log_level="error")\n',
+        encoding="utf-8",
+    )
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    process = subprocess.Popen([sys.executable, str(script), str(port)])
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            pytest.skip("fake JEB MCP server did not start")
+        monkeypatch.setenv("REA_JEB_MCP_URL", f"http://127.0.0.1:{port}/mcp")
+        target = _target(elf_file)
+        info = JebProvider().analyze("jeb_analyze", target, {}, None)
+        assert info.ok
+        assert info.value.result["engine"] == "jeb"
+        units = JebProvider().analyze("list_jeb_units", target, {}, None)
+        assert units.ok
+        assert units.value.result["units"] == ["MainActivity"]
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(
+    not (_available(AndroidDeepProvider()) and os.environ.get("REA_APK_FIXTURE")),
+    reason="requires JADX + REA_APK_FIXTURE (a real APK)",
+)
+def test_android_deep_real() -> None:
+    fixture = Path(os.environ["REA_APK_FIXTURE"])
+    target = _target(fixture)
+    search = AndroidDeepProvider().analyze(
+        "search_android_classes", target, {"query": "Foobar"}, None
+    )
+    assert search.ok
+    assert search.value.result["match_count"] >= 1
+    inspected = AndroidDeepProvider().analyze(
+        "inspect_android_class", target, {"class_name": "com.foobar.foo.Foobar"}, None
+    )
+    assert inspected.ok
+    assert "class Foobar" in inspected.value.result["source"]
+    method = AndroidDeepProvider().analyze(
+        "inspect_android_method",
+        target,
+        {"class_name": "com.foobar.foo.Foobar", "method": "somemethod"},
+        None,
+    )
+    assert method.ok
+    assert "somemethod" in method.value.result["snippet"]
+    references = AndroidDeepProvider().analyze(
+        "trace_android_references", target, {"query": "somemethod"}, None
+    )
+    assert references.ok
+    assert references.value.result["match_count"] >= 1
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(
+    not (_available(RizinProvider()) and os.environ.get("REA_ELF_FIXTURE")),
+    reason="requires rzpipe + rizin + REA_ELF_FIXTURE",
+)
+def test_rizin_native_proxy_real() -> None:
+    target = _target(Path(os.environ["REA_ELF_FIXTURE"]))
+    provider = RizinProvider()
+    segments = provider.analyze("list_segments", target, {"limit": 5}, None)
+    assert segments.ok and segments.value.result["segments"]
+    procedures = provider.analyze("list_procedures", target, {"limit": 5}, None)
+    assert procedures.ok and procedures.value.result["procedures"]
+    navigated = provider.analyze("goto_address", target, {"address": "entry0"}, None)
+    assert navigated.ok
+    bookmarked = provider.analyze(
+        "set_bookmark", target, {"name": "entry", "address": "entry0"}, None
+    )
+    assert bookmarked.ok and "entry" in bookmarked.value.result["bookmarks"]
+    context = provider.analyze("get_navigation_context", target, {"address": "entry0"}, None)
+    assert context.ok
+    pseudocode = provider.analyze("procedure_pseudo_code", target, {"function": "entry0"}, None)
+    assert pseudocode.ok
+    commented = provider.analyze(
+        "set_comment", target, {"address": "entry0", "comment": "rea"}, None
+    )
+    assert commented.ok
+    imports = provider.analyze("inspect_native_api", target, {"limit": 5}, None)
+    assert imports.ok
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(
+    not (_available(RizinProvider()) and os.environ.get("REA_ELF_FIXTURE")),
+    reason="requires rzpipe + rizin + REA_ELF_FIXTURE",
+)
+def test_rizin_debug_session_real() -> None:
+    target = _target(Path(os.environ["REA_ELF_FIXTURE"]))
+    provider = DebugSessionProvider()
+    executed = provider.analyze("execute_rizin_command", target, {"command": "ij"}, None)
+    assert executed.ok and executed.value.result["output"]
+    started = provider.analyze("start_rizin_debug_session", target, {}, None)
+    assert started.ok
+    session_id = started.value.result["session_id"]
+    status = provider.analyze(
+        "rizin_debug_session_status", target, {"session_id": session_id}, None
+    )
+    assert status.ok
+    closed = provider.analyze("close_rizin_debug_session", target, {"session_id": session_id}, None)
+    assert closed.ok

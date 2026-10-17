@@ -7,6 +7,7 @@ resolution to member names is out of scope.
 
 from __future__ import annotations
 
+import mmap
 from typing import Any
 
 # opcode -> (name, operand kind)
@@ -177,7 +178,7 @@ class CilError(ValueError):
     pass
 
 
-def parse_method_body(data: bytes, offset: int) -> tuple[dict[str, Any], bytes]:
+def parse_method_body(data: bytes | mmap.mmap, offset: int) -> tuple[dict[str, Any], bytes]:
     if offset < 0 or offset >= len(data):
         raise CilError("Method body is outside the image")
     first = data[offset]

@@ -97,14 +97,11 @@ def test_evm_unavailable_reports_capability_error(tmp_path: Path) -> None:
         assert result.error.tag == "AnalysisCapabilityUnavailableError"
 
 
-def test_pcap_unavailable_or_runs(pcap_file: Path) -> None:
+def test_pcap_builtin_parser_runs(pcap_file: Path) -> None:
     provider = PcapProvider()
-    available = all(cap.available for cap in provider.capabilities())
     result = provider.analyze("inspect_pcap_capture", _target(pcap_file), {}, None)  # type: ignore[arg-type]
-    if available:
-        assert result.ok
-    else:
-        assert not result.ok
+    assert result.ok
+    assert "fields" in result.value.result
 
 
 def test_firmware_unavailable_reports_reason(elf_file: Path) -> None:

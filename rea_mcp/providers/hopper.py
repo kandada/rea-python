@@ -1,8 +1,10 @@
 """Hopper bridge client.
 
-The bridge (``bridge/hopper_bridge.py``) runs *inside* Hopper and serves a JSON
-line protocol over a Unix socket. This provider is the external client: it never
-runs Hopper itself, and reports an actionable error when no bridge is configured.
+The bridge (``bridge/hopper_bridge.py``) runs *inside* Hopper and serves an
+authenticated JSON-line protocol over a Unix socket: every request is exactly
+``{"id", "token", "method", "params"}``. This provider is the external client; it
+never runs Hopper itself, and reports an actionable error when no bridge/token
+is configured.
 """
 
 from __future__ import annotations
@@ -27,7 +29,16 @@ from .registry import TargetSupport
 _PROVIDER = ProviderIdentity(id="hopper", name="REA-Python Hopper bridge", version="1")
 _OPERATIONS = ("hopper_analyze", "hopper_function", "hopper_decompile", "hopper_xrefs")
 _ENV = "REA_HOPPER_BRIDGE"
+_TOKEN_ENV = "REA_HOPPER_BRIDGE_TOKEN"
 _DEFAULT_TIMEOUT = 60.0
+
+# REA operation -> upstream bridge method.
+_METHODS = {
+    "hopper_analyze": "analyze_function",
+    "hopper_function": "list_procedures",
+    "hopper_decompile": "procedure_pseudo_code",
+    "hopper_xrefs": "procedure_references",
+}
 
 
 class HopperProvider(AnalysisProvider):
@@ -37,12 +48,17 @@ class HopperProvider(AnalysisProvider):
     def _socket_path(self) -> str | None:
         return os.environ.get(_ENV)
 
+    def _token(self) -> str | None:
+        return os.environ.get(_TOKEN_ENV) or os.environ.get("REA_TOKEN")
+
     def _availability(self) -> tuple[bool, str | None]:
         path = self._socket_path()
         if not path:
             return False, f"set {_ENV} to the running Hopper bridge socket"
         if not os.path.exists(path):
             return False, f"bridge socket {path} was not found"
+        if not self._token():
+            return False, f"set {_TOKEN_ENV} to the bridge's run token"
         return True, None
 
     def capabilities(self) -> tuple[CapabilityDescriptor, ...]:
@@ -93,12 +109,19 @@ class HopperProvider(AnalysisProvider):
                     reason="provider_unavailable",
                     remediation_action=(
                         "Start Hopper, run bridge/hopper_bridge.py inside it, and set "
-                        f"{_ENV} to the printed socket path."
+                        f"{_ENV} and {_TOKEN_ENV} from the bridge bootstrap."
                     ),
                 )
             )
-        request = {"operation": operation, "parameters": parameters, "target": target.path}
-        response = self._request(request)
+        method = _METHODS[operation]
+        function = str(parameters.get("function") or parameters.get("procedure") or "main")
+        if method == "list_procedures":
+            params: dict[str, Any] = {}
+        elif method == "procedure_references" or method == "procedure_pseudo_code":
+            params = {"procedure": function}
+        else:
+            params = {"procedure": function}
+        response = self._request(method, params)
         if not response.ok:
             return err(response.error)
         return ok(
@@ -109,44 +132,65 @@ class HopperProvider(AnalysisProvider):
             )
         )
 
-    def _request(self, request: dict[str, Any]) -> Result[dict[str, Any], AnalysisError]:
+    def _request(
+        self, method: str, params: dict[str, Any]
+    ) -> Result[dict[str, Any], AnalysisError]:
         path = self._socket_path()
-        assert path is not None
-        payload = json.dumps({"id": 1, **request}).encode("utf-8") + b"\n"
+        token = self._token()
+        assert path is not None and token is not None
+        payload = (
+            json.dumps({"id": 1, "token": token, "method": method, "params": params}).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(_DEFAULT_TIMEOUT)
                 client.connect(path)
                 client.sendall(payload)
                 buffer = b""
-                while b"\n" not in buffer:
-                    chunk = client.recv(65536)
-                    if not chunk:
+                while True:
+                    while b"\n" not in buffer:
+                        chunk = client.recv(65536)
+                        if not chunk:
+                            break
+                        buffer += chunk
+                    if b"\n" not in buffer:
                         break
-                    buffer += chunk
+                    line, buffer = buffer.split(b"\n", 1)
+                    try:
+                        decoded = json.loads(line.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError) as cause:
+                        return err(
+                            ProviderAdapterError(
+                                message=f"Hopper bridge returned malformed data: {cause}"
+                            )
+                        )
+                    if not isinstance(decoded, dict):
+                        continue
+                    if "event" in decoded:
+                        continue
+                    if "error" in decoded:
+                        diagnostic = decoded.get("error") or {}
+                        message = (
+                            diagnostic.get("message")
+                            if isinstance(diagnostic, dict)
+                            else str(diagnostic)
+                        )
+                        return err(
+                            ProviderAdapterError(
+                                message=str(message or "Hopper bridge reported an error"),
+                                details={"bridge_error": diagnostic},
+                            )
+                        )
+                    result = decoded.get("result")
+                    return ok(result if isinstance(result, dict) else {"value": result})
         except OSError as cause:
             return err(
                 ProviderAdapterError(message=f"Hopper bridge request failed: {cause}"),
             )
-        line = buffer.split(b"\n", 1)[0]
-        try:
-            decoded = json.loads(line.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as cause:
-            return err(
-                ProviderAdapterError(message=f"Hopper bridge returned malformed data: {cause}")
-            )
-        if not isinstance(decoded, dict):
-            return err(ProviderAdapterError(message="Hopper bridge returned a non-object response"))
-        if decoded.get("ok") is not True:
-            error = decoded.get("error") or {}
-            return err(
-                ProviderAdapterError(
-                    message=str(error.get("message", "Hopper bridge reported an error")),
-                    details={"bridge_error": error},
-                )
-            )
-        result = decoded.get("result")
-        return ok(result if isinstance(result, dict) else {"value": result})
+        return err(ProviderAdapterError(message="Hopper bridge closed without a response"))
 
 
 __all__ = ["HopperProvider"]

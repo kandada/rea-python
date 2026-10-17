@@ -27,35 +27,113 @@ METHODDEF = 0x06
 
 # Column schema: ('u1'|'u2'|'u4'|'str'|'guid'|'blob'| ('idx', table) | ('coded', tables, bits))
 _SIMPLE_TABLES: dict[int, list[Any]] = {
-    MODULE: [("u2", None), ("str", None), ("guid", None), ("guid", None), ("guid", None)],
-    TYPEREF: [("coded", (MODULE, 0x1A, 0x23, TYPEREF), 2), ("str", None), ("str", None)],
-    TYPEDEF: [
+    0x00: [("u2", None), ("str", None), ("guid", None), ("guid", None), ("guid", None)],
+    0x01: [("coded", (0x00, 0x1A, 0x23, 0x01), 2), ("str", None), ("str", None)],
+    0x02: [
         ("u4", None),
         ("str", None),
         ("str", None),
-        ("coded", (TYPEDEF, TYPEREF, 0x1B), 2),
-        ("idx", FIELD),
-        ("idx", METHODDEF),
+        ("coded", (0x02, 0x01, 0x1B), 2),
+        ("idx", 0x04),
+        ("idx", 0x06),
     ],
-    FIELDPTR: [("idx", FIELD)],
-    FIELD: [("u2", None), ("str", None), ("blob", None)],
-    METHODPTR: [("idx", METHODDEF)],
-    0x08: [("u2", None), ("u2", None), ("str", None)],  # Param
-    0x09: [("idx", TYPEDEF), ("coded", (TYPEDEF, TYPEREF, 0x1B), 2)],  # InterfaceImpl
-    0x0A: [
-        ("coded", (TYPEDEF, TYPEREF, 0x1A, METHODDEF, 0x1B), 3),
-        ("str", None),
+    0x03: [("idx", 0x04)],
+    0x04: [("u2", None), ("str", None), ("blob", None)],
+    0x05: [("idx", 0x06)],
+    0x06: [("u4", None), ("u2", None), ("u2", None), ("str", None), ("blob", None), ("idx", 0x08)],
+    0x07: [("idx", 0x08)],
+    0x08: [("u2", None), ("u2", None), ("str", None)],
+    0x09: [("idx", 0x02), ("coded", (0x02, 0x01, 0x1B), 2)],
+    0x0A: [("coded", (0x02, 0x01, 0x1A, 0x06, 0x1B), 3), ("str", None), ("blob", None)],
+    0x0B: [("u2", None), ("coded", (0x04, 0x08, 0x17), 2), ("blob", None)],
+    0x0C: [
+        (
+            "coded",
+            (
+                0x06,
+                0x04,
+                0x01,
+                0x02,
+                0x08,
+                0x09,
+                0x0A,
+                0x00,
+                0x0E,
+                0x17,
+                0x14,
+                0x11,
+                0x1A,
+                0x1B,
+                0x20,
+                0x23,
+                0x26,
+                0x27,
+                0x28,
+                0x2A,
+                0x2C,
+                0x2B,
+            ),
+            5,
+        ),
+        ("coded", (0x06, 0x0A), 3),
         ("blob", None),
-    ],  # MemberRef
-    0x1B: [("blob", None)],  # TypeSpec
-    METHODDEF: [
+    ],
+    0x0D: [("coded", (0x04, 0x08), 1), ("blob", None)],
+    0x0E: [("u2", None), ("coded", (0x02, 0x06, 0x20), 2), ("blob", None)],
+    0x0F: [("u2", None), ("u4", None), ("idx", 0x02)],
+    0x10: [("u4", None), ("idx", 0x04)],
+    0x11: [("blob", None)],
+    0x12: [("idx", 0x02), ("idx", 0x14)],
+    0x13: [("idx", 0x14)],
+    0x14: [("u2", None), ("str", None), ("coded", (0x02, 0x01, 0x1B), 2)],
+    0x15: [("idx", 0x02), ("idx", 0x17)],
+    0x16: [("idx", 0x17)],
+    0x17: [("u2", None), ("str", None), ("blob", None)],
+    0x18: [("u2", None), ("idx", 0x06), ("coded", (0x14, 0x17), 1)],
+    0x19: [("idx", 0x02), ("coded", (0x06, 0x0A), 1), ("coded", (0x06, 0x0A), 1)],
+    0x1A: [("str", None)],
+    0x1B: [("blob", None)],
+    0x1C: [("u2", None), ("coded", (0x04, 0x06), 1), ("str", None), ("idx", 0x1A)],
+    0x1D: [("u4", None), ("idx", 0x04)],
+    0x20: [
         ("u4", None),
         ("u2", None),
         ("u2", None),
+        ("u2", None),
+        ("u2", None),
+        ("u4", None),
+        ("blob", None),
+        ("str", None),
+        ("str", None),
+    ],
+    0x21: [("u4", None)],
+    0x22: [("u4", None), ("u4", None), ("u4", None)],
+    0x23: [
+        ("u2", None),
+        ("u2", None),
+        ("u2", None),
+        ("u2", None),
+        ("u4", None),
+        ("blob", None),
+        ("str", None),
         ("str", None),
         ("blob", None),
-        ("idx", 0x08),
     ],
+    0x24: [("u4", None), ("idx", 0x23)],
+    0x25: [("u4", None), ("u4", None), ("u4", None), ("idx", 0x23)],
+    0x26: [("u4", None), ("str", None), ("blob", None)],
+    0x27: [
+        ("u4", None),
+        ("u4", None),
+        ("str", None),
+        ("str", None),
+        ("coded", (0x26, 0x23, 0x27), 2),
+    ],
+    0x28: [("u4", None), ("u4", None), ("str", None), ("coded", (0x26, 0x23, 0x27), 2)],
+    0x29: [("idx", 0x02), ("idx", 0x02)],
+    0x2A: [("u2", None), ("u2", None), ("coded", (0x02, 0x06), 1), ("str", None)],
+    0x2B: [("coded", (0x06, 0x0A), 1), ("blob", None)],
+    0x2C: [("idx", 0x2A), ("coded", (0x02, 0x01, 0x1B), 2)],
 }
 
 
@@ -334,3 +412,75 @@ __all__ = [
     "parse_managed_members",
     "resolve_token",
 ]
+
+
+_CALL_CONVENTIONS = {
+    0x0100: "winapi",
+    0x0200: "cdecl",
+    0x0300: "stdcall",
+    0x0400: "thiscall",
+    0x0500: "fastcall",
+}
+
+
+def parse_pinvoke(data: bytes | mmap.mmap, streams: dict[str, int]) -> list[dict[str, Any]] | None:
+    """Decode ImplMap rows into P/Invoke declarations."""
+
+    context = load_metadata(data, streams)
+    if context is None:
+        return None
+    if 0x1C not in context.offsets:
+        return []
+    row_size = _row_size(0x1C, context.heap, context.rows)
+    mf_size = _coded_index(context.rows, (0x04, 0x06), 1)
+    modref_size = _simple_index(context.rows, 0x1A)
+    str_size = 4 if context.heap & STRING_HEAP_4 else 2
+    base = context.offsets[0x1C]
+    results: list[dict[str, Any]] = []
+    for index in range(context.rows.get(0x1C, 0)):
+        offset = base + index * row_size
+        flags = struct.unpack_from("<H", data, offset)[0]
+        cursor = offset + 2
+        member = _read_index(data, cursor, mf_size)
+        cursor += mf_size
+        name_index = _read_index(data, cursor, str_size)
+        cursor += str_size
+        scope = _read_index(data, cursor, modref_size)
+        tag = member & 1
+        row = member >> 1
+        method = _methoddef_name(context, row) if tag == 1 and row else None
+        library = _moduleref_name(context, scope) if scope else None
+        results.append(
+            {
+                "method": method,
+                "native_library": library,
+                "entry_point": _string_at(data, context.strings_base, name_index),
+                "flags": flags,
+                "character_set": {0x0002: "ansi", 0x0004: "unicode", 0x0006: "auto"}.get(
+                    flags & 0x0006
+                ),
+                "calling_convention": _CALL_CONVENTIONS.get(flags & 0x0700),
+                "supports_last_error": bool(flags & 0x0040),
+            }
+        )
+    return results
+
+
+def _methoddef_name(context: MetadataContext, row: int) -> str | None:
+    if 0x06 not in context.offsets or row <= 0:
+        return None
+    str_size = 4 if context.heap & STRING_HEAP_4 else 2
+    row_size = _row_size(0x06, context.heap, context.rows)
+    offset = context.offsets[0x06] + (row - 1) * row_size
+    name_index = _read_index(context.data, offset + 8, str_size)
+    return _string_at(context.data, context.strings_base, name_index)
+
+
+def _moduleref_name(context: MetadataContext, row: int) -> str | None:
+    if 0x1A not in context.offsets or row <= 0:
+        return None
+    str_size = 4 if context.heap & STRING_HEAP_4 else 2
+    row_size = _row_size(0x1A, context.heap, context.rows)
+    offset = context.offsets[0x1A] + (row - 1) * row_size
+    name_index = _read_index(context.data, offset, str_size)
+    return _string_at(context.data, context.strings_base, name_index)

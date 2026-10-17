@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import mmap
 import re
-from pathlib import Path
 from typing import Any
 
 from ..domain.analysis_error import AnalysisError, AnalysisInputError
@@ -18,6 +17,7 @@ from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
+from .formats.io import open_target
 from .registry import TargetSupport
 
 _PROVIDER = ProviderIdentity(id="go", name="REA-Python Go metadata", version="1")
@@ -63,12 +63,25 @@ class GoBinaryProvider(AnalysisProvider):
                     operation=operation, message=f"unsupported operation {operation}"
                 )
             )
+        index = -1
+        ptr_size = 0
+        flags = 0
+        version: str | None = None
+        modules: list[dict[str, str]] = []
+        main_module: dict[str, str] | None = None
+        settings: dict[str, str] = {}
+        replacements: list[dict[str, str]] = []
         try:
-            data = Path(target.path).read_bytes()
+            with open_target(target.path) as data:
+                index = data.find(_MAGIC)
+                if index != -1:
+                    ptr_size = data[index + 14] if index + 15 < len(data) else 0
+                    flags = data[index + 15] if index + 16 < len(data) else 0
+                    version = _find_version(data, index)
+                    modules, main_module, settings, replacements = _parse_modules(data, index)
         except OSError as cause:
             return err(AnalysisInputError(operation=operation, message=str(cause)))
 
-        index = data.find(_MAGIC)
         if index == -1:
             return ok(
                 AnalysisExecution(
@@ -85,10 +98,6 @@ class GoBinaryProvider(AnalysisProvider):
                 )
             )
 
-        ptr_size = data[index + 14] if index + 15 < len(data) else 0
-        flags = data[index + 15] if index + 16 < len(data) else 0
-        version = _find_version(data, index)
-        modules, main_module, settings, replacements = _parse_modules(data, index)
         return ok(
             AnalysisExecution(
                 result={

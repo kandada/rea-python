@@ -50,6 +50,11 @@ class SqliteInput(AnalysisInput):
     row_limit: int = Field(default=20, ge=0, le=1000)
 
 
+class SignalDecodeInput(AnalysisInput):
+    channel: str | None = Field(default=None, description="VCD signal name to decode.")
+    baud: int = Field(default=9600, ge=1, le=10_000_000)
+
+
 class ProvidersInput(_Input):
     pass
 
@@ -81,6 +86,55 @@ class SetupInput(_Input):
 class MethodInput(AnalysisInput):
     method: str = Field(min_length=1)
     type: str | None = None
+
+
+class RecordUnknownToolInput(_Input):
+    question: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    severity: Literal["low", "medium", "high", "critical"] = "medium"
+    required_authority: str | None = None
+    required_confidence: Literal["observed", "derived", "inferred"] = "observed"
+
+
+class UpdateUnknownToolInput(_Input):
+    unknown_id: str = Field(min_length=1)
+    status: Literal["open", "investigating", "blocked", "contradicted", "resolved"]
+    severity: Literal["low", "medium", "high", "critical"] | None = None
+    resolution: dict[str, Any] | None = None
+
+
+class SnapshotExportToolInput(_Input):
+    path: str = Field(min_length=1)
+    out: str = Field(min_length=1)
+    provider_id: str | None = None
+    overwrite: bool = False
+
+
+class SnapshotImportToolInput(_Input):
+    path: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    provider_id: str | None = None
+
+
+class CompareCapturesInput(_Input):
+    left: str = Field(min_length=1, description="Left HAR/SAZ capture path.")
+    right: str = Field(min_length=1, description="Right HAR/SAZ capture path.")
+
+
+class ObligationInput(_Input):
+    name: str = Field(min_length=1)
+    kind: str = "function"
+    required_facets: list[str] = Field(default_factory=list)
+    provided_facets: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class BuildLedgerInput(_Input):
+    obligations: list[ObligationInput] = Field(default_factory=list)
+
+
+class EvaluateCoverageInput(_Input):
+    ledger: dict[str, Any]
 
 
 class FunctionInput(AnalysisInput):
@@ -119,6 +173,172 @@ class CaptureInput(_Input):
 class CompareInput(_Input):
     left: str = Field(min_length=1, description="Path to a left Evidence record JSON.")
     right: str = Field(min_length=1, description="Path to a right Evidence record JSON.")
+
+
+class ObserveWebPageInput(_Input):
+    url: str = Field(min_length=1, description="Page URL to observe.")
+    timeout: float = Field(default=30.0, gt=0, le=600)
+
+
+class CdpEndpointInput(_Input):
+    endpoint: str | None = Field(
+        default=None, description="CDP base URL; defaults to REA_CDP_URL or 127.0.0.1:9222."
+    )
+
+
+class CaptureCdpInput(CdpEndpointInput):
+    duration: float = Field(default=5.0, gt=0, le=600)
+    target_url: str | None = None
+
+
+class AndroidClassInput(AnalysisInput):
+    class_name: str = Field(min_length=1, description="Fully-qualified class name.")
+
+
+class AndroidAppInfoInput(_Input):
+    package: str = Field(min_length=1, description="Android package name.")
+
+
+class AdbShellInput(_Input):
+    command: list[str] = Field(min_length=1, description="Arguments passed to 'adb shell'.")
+    timeout: float = Field(default=60.0, gt=0, le=3600)
+
+
+class FridaDeviceInput(_Input):
+    device: str | None = Field(
+        default=None, description="Frida device id; first device by default."
+    )
+
+
+class AdbToolInput(_Input):
+    serial: str | None = None
+    scope: str | None = None
+    package: str | None = None
+    output_directory: str | None = None
+    count: int | None = None
+    buffer: str | None = None
+    pid: int | None = None
+    device_path: str | None = None
+    local_path: str | None = None
+    overwrite: bool | None = None
+    namespace: str | None = None
+    key: str | None = None
+    query: str | None = None
+    apk_path: str | None = None
+    replace: bool | None = None
+    action: str | None = None
+    data_uri: str | None = None
+    component: str | None = None
+    extras: list[dict[str, Any]] | None = None
+    timeout: float | None = None
+    command: list[str] | None = None
+
+
+class PacketFieldsInput(AnalysisInput):
+    limit: int = Field(default=500, ge=1, le=100_000)
+
+
+class FirmwareExtractInput(AnalysisInput):
+    output_directory: str = Field(min_length=1)
+
+
+class JebItemInput(AnalysisInput):
+    item: str = Field(min_length=1)
+
+
+class FridaSessionInput(_Input):
+    session_id: str | None = None
+    device: str | None = None
+    target: str | int | None = None
+    spawn: bool = False
+    source: str | None = None
+    name: str | None = None
+    duration: float = 2.0
+
+
+class NativeToolInput(AnalysisInput):
+    address: str | None = None
+    name: str | None = None
+    comment: str | None = None
+    text: str | None = None
+    function: str = "main"
+    query: str | None = None
+    limit: int = 200
+    count: int = 64
+    delta: int = 1
+    assignments: list[dict[str, Any]] | None = None
+
+
+class DebugSessionInput(_Input):
+    session_id: str | None = None
+    command: str | None = None
+    commands: list[str] | None = None
+    args: list[str] | None = None
+    timeout: float | None = None
+
+
+class VerifyReconstructionInput(_Input):
+    ledger: dict[str, Any]
+
+
+class VerifyUnknownInput(_Input):
+    unknown_id: str = Field(min_length=1)
+
+
+class BatchDecompileInput(_Input):
+    functions: list[str] = Field(min_length=1)
+
+
+class CallGraphInput(_Input):
+    limit: int = Field(default=50, ge=1, le=1000)
+
+
+class CallPathInput(_Input):
+    from_function: str = Field(min_length=1)
+    to_function: str = Field(min_length=1)
+    limit: int = Field(default=50, ge=1, le=1000)
+
+
+class TraceFeatureInput(_Input):
+    feature: str = Field(min_length=1)
+
+
+class TraceValuesInput(_Input):
+    query: str = Field(min_length=1)
+
+
+class AndroidDeepInput(AnalysisInput):
+    class_name: str | None = None
+    method: str | None = None
+    query: str | None = None
+    limit: int = Field(default=200, ge=1, le=10_000)
+
+
+class WebToolInput(_Input):
+    url: str | None = None
+    endpoint: str | None = None
+    output: str | None = None
+    left: str | None = None
+    right: str | None = None
+    source_url: str | None = None
+    symbol: str | None = None
+    query: str | None = None
+    path: str | None = None
+    steps: list[dict[str, Any]] | None = None
+    duration: float = 3.0
+    full_page: bool = False
+    selector: str | None = None
+    value: str | None = None
+
+
+class EngineEndpointInput(_Input):
+    pass
+
+
+class RecordedCrashInput(AnalysisInput):
+    executable: str = Field(
+        min_length=1, description="Path to the executable that produced the core."
+    )
 
 
 class DoctorInput(_Input):
@@ -282,6 +502,958 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract("search", "Search within the target.", SearchInput),
     _analysis_contract("xrefs", "Cross-references to an address or function.", XrefsInput),
     ToolContract(
+        name="record_unknown",
+        description="Record an unresolved investigation question (unknown).",
+        input_model=RecordUnknownToolInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="update_unknown",
+        description="Update an unknown's status/resolution.",
+        input_model=UpdateUnknownToolInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_unknowns",
+        description="List recorded unknowns (current revisions).",
+        input_model=SessionInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="snapshot_export",
+        description="Open a target and export an analysis snapshot to a file.",
+        input_model=SnapshotExportToolInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="snapshot_import",
+        description="Import a saved analysis snapshot for a target.",
+        input_model=SnapshotImportToolInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    _analysis_contract(
+        "inspect_electron_fuses", "Electron fuse-wire security posture.", AnalysisInput
+    ),
+    _analysis_contract(
+        "inspect_entitlements", "Entitlements plist key/value inventory.", AnalysisInput
+    ),
+    _analysis_contract(
+        "inspect_interface_builder",
+        "Compiled Interface Builder archive inventory.",
+        AnalysisInput,
+    ),
+    _analysis_contract(
+        "inspect_signal_capture", "VCD signal inventory and transition counts.", AnalysisInput
+    ),
+    _analysis_contract(
+        "decode_uart_capture", "Decode 8N1 UART from a VCD signal.", SignalDecodeInput
+    ),
+    _analysis_contract(
+        "inspect_crash_dump", "Structured GDB/pwndbg crash-dump summary.", AnalysisInput
+    ),
+    ToolContract(
+        name="compare_network_captures",
+        description="Compare two HAR/SAZ captures by request set.",
+        input_model=CompareCapturesInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_web_captures",
+        description="Compare two web network captures by request set.",
+        input_model=CompareCapturesInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_managed_members",
+        description="Compare the member sets of two managed assemblies.",
+        input_model=CompareCapturesInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="build_reconstruction_obligation_ledger",
+        description="Build a reconstruction obligation ledger and its coverage.",
+        input_model=BuildLedgerInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="evaluate_reconstruction_coverage",
+        description="Evaluate coverage/gaps from a reconstruction ledger.",
+        input_model=EvaluateCoverageInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="observe_web_page",
+        description="Observe a page's title, final URL and script count via playwright.",
+        input_model=ObserveWebPageInput,
+        operation="observe_web_page",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_cdp_targets",
+        description="List Chrome DevTools Protocol targets from a running runtime.",
+        input_model=CdpEndpointInput,
+        operation="inspect_cdp_targets",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="capture_cdp_network",
+        description="Capture CDP network request metadata for a bounded duration.",
+        input_model=CaptureCdpInput,
+        operation="capture_cdp_network",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract(
+        "decode_android_resources", "Decode APK resources with apktool.", AnalysisInput
+    ),
+    _analysis_contract("decode_android_smali", "Full apktool smali inventory.", AnalysisInput),
+    _analysis_contract(
+        "decompile_android_apk", "Decompile an APK to Java with JADX.", AnalysisInput
+    ),
+    _analysis_contract(
+        "decompile_android_class", "Decompile one class with JADX.", AndroidClassInput
+    ),
+    _analysis_contract(
+        "decode_signal_recording", "Decode a logic-signal recording with sigrok.", AnalysisInput
+    ),
+    _analysis_contract("kuna_decompile", "Decompile a function with Kuna.", FunctionInput),
+    _analysis_contract("ghidra_analyze", "Ghidra overview via pyhidra.", AnalysisInput),
+    _analysis_contract("ghidra_function", "Ghidra function inventory.", FunctionInput),
+    _analysis_contract("ghidra_decompile", "Ghidra pseudocode.", DecompileInput),
+    _analysis_contract("ida_analyze", "IDA overview via the running service.", AnalysisInput),
+    _analysis_contract("ida_function", "IDA function inventory.", FunctionInput),
+    _analysis_contract("ida_decompile", "IDA pseudocode.", DecompileInput),
+    _analysis_contract("ida_xrefs", "IDA cross-references.", XrefsInput),
+    _analysis_contract("jeb_analyze", "JEB overview via the running service.", AnalysisInput),
+    _analysis_contract("jeb_function", "JEB function inventory.", FunctionInput),
+    _analysis_contract("jeb_decompile", "JEB pseudocode.", DecompileInput),
+    _analysis_contract(
+        "inspect_recorded_crash", "Registers/signal from a recorded core.", RecordedCrashInput
+    ),
+    ToolContract(
+        name="list_adb_devices",
+        description="List attached ADB devices.",
+        input_model=SessionInput,
+        operation="list_adb_devices",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_adb_packages",
+        description="List installed packages on the attached device.",
+        input_model=SessionInput,
+        operation="list_adb_packages",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="android_app_info",
+        description="Dump package facts for one Android package.",
+        input_model=AndroidAppInfoInput,
+        operation="android_app_info",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="adb_shell",
+        description="Run a bounded command through 'adb shell'.",
+        input_model=AdbShellInput,
+        operation="adb_shell",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_frida_devices",
+        description="List Frida devices.",
+        input_model=SessionInput,
+        operation="list_frida_devices",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_frida_applications",
+        description="List applications on a Frida device.",
+        input_model=FridaDeviceInput,
+        operation="list_frida_applications",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_frida_processes",
+        description="List processes on a Frida device.",
+        input_model=FridaDeviceInput,
+        operation="list_frida_processes",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="ida_inspect_provider",
+        description="Probe the configured IDA service endpoint.",
+        input_model=EngineEndpointInput,
+        operation="ida_inspect_provider",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="jeb_inspect_provider",
+        description="Probe the configured JEB service endpoint.",
+        input_model=EngineEndpointInput,
+        operation="jeb_inspect_provider",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_adb_client",
+        description="Inspect the caller-selected adb binary and version.",
+        input_model=AdbToolInput,
+        operation="inspect_adb_client",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_adb_device",
+        description="Inspect one device's build identity via getprop.",
+        input_model=AdbToolInput,
+        operation="inspect_adb_device",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="pull_adb_package",
+        description="Pull every APK of an installed package.",
+        input_model=AdbToolInput,
+        operation="pull_adb_package",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="read_adb_logcat",
+        description="Read the most recent logcat lines.",
+        input_model=AdbToolInput,
+        operation="read_adb_logcat",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_adb_package",
+        description="Dump package facts for one installed package.",
+        input_model=AdbToolInput,
+        operation="inspect_adb_package",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="pull_adb_file",
+        description="Pull one absolute device file.",
+        input_model=AdbToolInput,
+        operation="pull_adb_file",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="push_adb_file",
+        description="Push a local file to an absolute device path.",
+        input_model=AdbToolInput,
+        operation="push_adb_file",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="capture_adb_screen",
+        description="Capture a PNG screenshot from the device.",
+        input_model=AdbToolInput,
+        operation="capture_adb_screen",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_adb_processes",
+        description="List device processes (ps -A).",
+        input_model=AdbToolInput,
+        operation="list_adb_processes",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_adb_directory",
+        description="List one absolute device directory.",
+        input_model=AdbToolInput,
+        operation="list_adb_directory",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_adb_features",
+        description="List device package-manager features.",
+        input_model=AdbToolInput,
+        operation="list_adb_features",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_adb_services",
+        description="List device services.",
+        input_model=AdbToolInput,
+        operation="list_adb_services",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_adb_display",
+        description="Dump display state.",
+        input_model=AdbToolInput,
+        operation="inspect_adb_display",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_adb_window",
+        description="Dump window state.",
+        input_model=AdbToolInput,
+        operation="inspect_adb_window",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="read_adb_setting",
+        description="Read one settings namespace key.",
+        input_model=AdbToolInput,
+        operation="read_adb_setting",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="collect_adb_bugreport",
+        description="Collect a device bugreport archive.",
+        input_model=AdbToolInput,
+        operation="collect_adb_bugreport",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="resolve_adb_packages",
+        description="Resolve packages by case-insensitive substring.",
+        input_model=AdbToolInput,
+        operation="resolve_adb_packages",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="install_adb_package",
+        description="Install a local APK.",
+        input_model=AdbToolInput,
+        operation="install_adb_package",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="uninstall_adb_package",
+        description="Uninstall an installed package.",
+        input_model=AdbToolInput,
+        operation="uninstall_adb_package",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="start_adb_app",
+        description="Start an app's launcher activity.",
+        input_model=AdbToolInput,
+        operation="start_adb_app",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="start_adb_activity",
+        description="Start an activity with an intent.",
+        input_model=AdbToolInput,
+        operation="start_adb_activity",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="stop_adb_app",
+        description="Force-stop an app.",
+        input_model=AdbToolInput,
+        operation="stop_adb_app",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract(
+        "inspect_packet_fields", "Per-packet fields for a saved capture.", PacketFieldsInput
+    ),
+    _analysis_contract(
+        "inspect_packet_capture", "Saved capture summary and endpoints.", AnalysisInput
+    ),
+    ToolContract(
+        name="inspect_pcap_client",
+        description="Inspect the caller-selected tshark client.",
+        input_model=SessionInput,
+        operation="inspect_pcap_client",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_signal_decoders",
+        description="List available sigrok signal decoders.",
+        input_model=SessionInput,
+        operation="inspect_signal_decoders",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract(
+        "extract_firmware", "Extract firmware regions to files.", FirmwareExtractInput
+    ),
+    ToolContract(
+        name="inspect_jeb_client",
+        description="Inspect the configured JEB service.",
+        input_model=EngineEndpointInput,
+        operation="inspect_jeb_client",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract("open_jeb_project", "Open a project in JEB.", AnalysisInput),
+    _analysis_contract("list_jeb_units", "List JEB project units.", AnalysisInput),
+    _analysis_contract("decompile_jeb_item", "Decompile one JEB unit.", JebItemInput),
+    ToolContract(
+        name="start_frida_session",
+        description="Start a Frida session on a process.",
+        input_model=FridaSessionInput,
+        operation="start_frida_session",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="frida_session_status",
+        description="Report a Frida session.",
+        input_model=FridaSessionInput,
+        operation="frida_session_status",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="load_frida_script",
+        description="Load a script into a Frida session.",
+        input_model=FridaSessionInput,
+        operation="load_frida_script",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="unload_frida_script",
+        description="Unload a Frida script.",
+        input_model=FridaSessionInput,
+        operation="unload_frida_script",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="resume_frida_session",
+        description="Resume a spawned Frida session.",
+        input_model=FridaSessionInput,
+        operation="resume_frida_session",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="close_frida_session",
+        description="Close a Frida session.",
+        input_model=FridaSessionInput,
+        operation="close_frida_session",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="instrument_with_frida",
+        description="Attach, run a script briefly, and collect messages.",
+        input_model=FridaSessionInput,
+        operation="instrument_with_frida",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract("current_address", "Current navigation address.", NativeToolInput),
+    _analysis_contract("goto_address", "Seek to an address.", NativeToolInput),
+    _analysis_contract("next_address", "Advance the current address.", NativeToolInput),
+    _analysis_contract("prev_address", "Return to the previous address.", NativeToolInput),
+    _analysis_contract("current_document", "Current document identity.", NativeToolInput),
+    _analysis_contract(
+        "current_procedure", "Procedure containing the current address.", NativeToolInput
+    ),
+    _analysis_contract("list_documents", "List open documents.", NativeToolInput),
+    _analysis_contract("list_segments", "List segments.", NativeToolInput),
+    _analysis_contract("list_strings", "List strings.", NativeToolInput),
+    _analysis_contract("list_names", "List names/flags.", NativeToolInput),
+    _analysis_contract("list_procedures", "List procedures.", NativeToolInput),
+    _analysis_contract("list_bookmarks", "List bookmarks.", NativeToolInput),
+    _analysis_contract("set_bookmark", "Set a bookmark.", NativeToolInput),
+    _analysis_contract("unset_bookmark", "Remove a bookmark.", NativeToolInput),
+    _analysis_contract(
+        "get_navigation_context", "Navigation context at an address.", NativeToolInput
+    ),
+    _analysis_contract(
+        "inspect_address_context", "Instruction/function/xref context.", NativeToolInput
+    ),
+    _analysis_contract("address_name", "Name at an address.", NativeToolInput),
+    _analysis_contract("comment", "Comment at an address.", NativeToolInput),
+    _analysis_contract("inline_comment", "Inline comment at an address.", NativeToolInput),
+    _analysis_contract("set_address_name", "Rename a function at an address.", NativeToolInput),
+    _analysis_contract("set_addresses_names", "Apply multiple address renames.", NativeToolInput),
+    _analysis_contract("set_comment", "Set a comment at an address.", NativeToolInput),
+    _analysis_contract(
+        "set_inline_comment", "Set an inline comment at an address.", NativeToolInput
+    ),
+    _analysis_contract(
+        "annotate_native_function", "Rename and/or comment one function.", NativeToolInput
+    ),
+    _analysis_contract("procedure_address", "Entry address of a procedure.", NativeToolInput),
+    _analysis_contract("procedure_assembly", "Disassembly of a procedure.", NativeToolInput),
+    _analysis_contract("procedure_callees", "Callees of a procedure.", NativeToolInput),
+    _analysis_contract("procedure_callers", "Callers of a procedure.", NativeToolInput),
+    _analysis_contract("procedure_info", "Procedure metadata.", NativeToolInput),
+    _analysis_contract("procedure_pseudo_code", "Pseudocode for a procedure.", NativeToolInput),
+    _analysis_contract("procedure_references", "Callers and callees.", NativeToolInput),
+    _analysis_contract(
+        "resolve_containing_procedure",
+        "Resolve the procedure containing an address.",
+        NativeToolInput,
+    ),
+    _analysis_contract(
+        "resolve_native_call_targets", "Resolve call targets at an address.", NativeToolInput
+    ),
+    _analysis_contract(
+        "read_function_instructions", "Instructions for a function/address.", NativeToolInput
+    ),
+    _analysis_contract("search_procedures", "Search procedure names.", NativeToolInput),
+    _analysis_contract("search_strings", "Search strings.", NativeToolInput),
+    _analysis_contract(
+        "find_xrefs_to_name", "Cross-references to a named symbol.", NativeToolInput
+    ),
+    _analysis_contract("inspect_native_data_type", "Recovered types.", NativeToolInput),
+    _analysis_contract(
+        "inspect_native_instruction", "Decoded instruction at an address.", NativeToolInput
+    ),
+    _analysis_contract(
+        "inspect_native_load_image", "Loaded image verification facts.", NativeToolInput
+    ),
+    _analysis_contract("inspect_native_api", "Imported API inventory.", NativeToolInput),
+    _analysis_contract("analyze_swift_types", "Objective-C/Swift metadata.", NativeToolInput),
+    _analysis_contract("get_objc_classes", "Objective-C classes.", NativeToolInput),
+    _analysis_contract("get_objc_protocols", "Objective-C protocols.", NativeToolInput),
+    _analysis_contract("start_gdb_session", "Start a GDB session.", DebugSessionInput),
+    ToolContract(
+        name="gdb_session_status",
+        description="Report a GDB session.",
+        input_model=DebugSessionInput,
+        operation="gdb_session_status",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="close_gdb_session",
+        description="Close a GDB session.",
+        input_model=DebugSessionInput,
+        operation="close_gdb_session",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract("gdb_console", "Run GDB batch commands.", DebugSessionInput),
+    _analysis_contract(
+        "start_rizin_debug_session", "Start a Rizin debug session.", DebugSessionInput
+    ),
+    ToolContract(
+        name="rizin_debug_session_status",
+        description="Report a Rizin debug session.",
+        input_model=DebugSessionInput,
+        operation="rizin_debug_session_status",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="close_rizin_debug_session",
+        description="Close a Rizin debug session.",
+        input_model=DebugSessionInput,
+        operation="close_rizin_debug_session",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract("rizin_debug_command", "Run a Rizin debug command.", DebugSessionInput),
+    _analysis_contract("execute_rizin_command", "Run a Rizin command.", DebugSessionInput),
+    ToolContract(
+        name="list_cutter_sessions",
+        description="List Cutter bridge sessions.",
+        input_model=DebugSessionInput,
+        operation="list_cutter_sessions",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract(
+        "cutter_command", "Run a command through the Cutter bridge.", DebugSessionInput
+    ),
+    ToolContract(
+        name="get_evidence_bundle",
+        description="Return the session Evidence bundle.",
+        input_model=SessionInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="verify_reconstruction",
+        description="Verify a reconstruction ledger.",
+        input_model=VerifyReconstructionInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="verify_unknown_resolution",
+        description="Verify an unknown's resolution status.",
+        input_model=VerifyUnknownInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_bundles",
+        description="Compare two Evidence bundles.",
+        input_model=CompareInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_functions",
+        description="Compare function inventories from two Evidence files.",
+        input_model=CompareInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_process_captures",
+        description="Compare two process captures.",
+        input_model=CompareInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="correlate_static_and_runtime",
+        description="Correlate static and runtime Evidence operations.",
+        input_model=CompareInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="find_changed_behavior",
+        description="Find changed Evidence between two bundles.",
+        input_model=CompareInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="batch_decompile",
+        description="Decompile multiple functions.",
+        input_model=BatchDecompileInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="get_call_graph",
+        description="Build a function call graph.",
+        input_model=CallGraphInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="build_call_path",
+        description="Find a call path between two functions.",
+        input_model=CallPathInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_call_path",
+        description="Trace a call path between two functions.",
+        input_model=CallPathInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_feature",
+        description="Trace a feature across strings, procedures and xrefs.",
+        input_model=TraceFeatureInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_native_values",
+        description="Trace values across strings and matches.",
+        input_model=TraceValuesInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_apktool_client",
+        description="Inspect the caller-selected apktool binary.",
+        input_model=SessionInput,
+        operation="inspect_apktool_client",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    _analysis_contract("inspect_dart_aot", "Static Dart AOT snapshot facts.", AnalysisInput),
+    _analysis_contract(
+        "search_android_classes", "Search decompiled Android classes.", AndroidDeepInput
+    ),
+    _analysis_contract(
+        "inspect_android_class", "Inspect one decompiled Android class.", AndroidDeepInput
+    ),
+    _analysis_contract("inspect_android_method", "Inspect one Android method.", AndroidDeepInput),
+    _analysis_contract(
+        "trace_android_references", "Search references across decompiled sources.", AndroidDeepInput
+    ),
+    ToolContract(
+        name="list_browser_targets",
+        description="List browser CDP targets.",
+        input_model=WebToolInput,
+        operation="list_browser_targets",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_electron_targets",
+        description="List Electron CDP targets.",
+        input_model=WebToolInput,
+        operation="list_electron_targets",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="list_javascript_runtime_targets",
+        description="List JavaScript runtime targets.",
+        input_model=WebToolInput,
+        operation="list_javascript_runtime_targets",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_web_page",
+        description="Inspect a page's title, scripts, forms and meta.",
+        input_model=WebToolInput,
+        operation="inspect_web_page",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_web_event_listeners",
+        description="Inspect inline handlers and addEventListener use.",
+        input_model=WebToolInput,
+        operation="inspect_web_event_listeners",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="observe_web_execution",
+        description="Observe console output and requests.",
+        input_model=WebToolInput,
+        operation="observe_web_execution",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="observe_web_session",
+        description="Observe cookies and web storage.",
+        input_model=WebToolInput,
+        operation="observe_web_session",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="capture_web_screenshot",
+        description="Capture a page screenshot.",
+        input_model=WebToolInput,
+        operation="capture_web_screenshot",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_web_screenshots",
+        description="Compare two screenshots.",
+        input_model=WebToolInput,
+        operation="compare_web_screenshots",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="capture_browser_scenario",
+        description="Run a browser scenario.",
+        input_model=WebToolInput,
+        operation="capture_browser_scenario",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="capture_electron_scenario",
+        description="Run an Electron/CDP scenario.",
+        input_model=WebToolInput,
+        operation="capture_electron_scenario",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_electron_page",
+        description="Inspect an Electron page target.",
+        input_model=WebToolInput,
+        operation="inspect_electron_page",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="observe_javascript_runtime",
+        description="List runtime targets.",
+        input_model=WebToolInput,
+        operation="observe_javascript_runtime",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="reconcile_javascript_runtime",
+        description="Reconcile runtime target sets.",
+        input_model=WebToolInput,
+        operation="reconcile_javascript_runtime",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="analyze_web_bundle",
+        description="Analyze a local JavaScript bundle.",
+        input_model=WebToolInput,
+        operation="analyze_web_bundle",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="export_web_scripts",
+        description="Export page scripts to files.",
+        input_model=WebToolInput,
+        operation="export_web_scripts",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="recover_javascript_sources",
+        description="Recover sources from source maps.",
+        input_model=WebToolInput,
+        operation="recover_javascript_sources",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_web_module_imports",
+        description="Trace module imports across scripts.",
+        input_model=WebToolInput,
+        operation="trace_web_module_imports",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_web_source_location",
+        description="Find a symbol in a source file.",
+        input_model=WebToolInput,
+        operation="trace_web_source_location",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="discover_webmcp_tools",
+        description="Discover WebMCP declarations.",
+        input_model=WebToolInput,
+        operation="discover_webmcp_tools",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_native_ui_action",
+        description="Trace a native UI action.",
+        input_model=WebToolInput,
+        operation="trace_native_ui_action",
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="binary_overview",
+        description="Alias for the provider overview analysis.",
+        input_model=AnalysisInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=True,
+    ),
+    ToolContract(
+        name="analyze_function",
+        description="Alias for function inventory/selection.",
+        input_model=FunctionInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=True,
+    ),
+    ToolContract(
+        name="capture_process_scenario",
+        description="Alias for bounded process capture.",
+        input_model=CaptureInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_artifacts",
+        description="Alias for comparing saved Evidence records.",
+        input_model=CompareInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="export_evidence_bundle",
+        description="Alias for Evidence bundle export.",
+        input_model=EvidenceExportInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="import_evidence_bundle",
+        description="Alias for Evidence bundle import.",
+        input_model=EvidenceImportInput,
+        operation=None,
+        requires_target=False,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="inspect_web_network_capture",
+        description="Alias for HAR/SAZ capture inspection.",
+        input_model=AnalysisInput,
+        operation=None,
+        requires_target=True,
+        returns_evidence=True,
+    ),
+    ToolContract(
         name="compare_evidence",
         description="Compare two saved Evidence records.",
         input_model=CompareInput,
@@ -324,21 +1496,21 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         returns_evidence=False,
     ),
     ToolContract(
-        name="evidence-export",
+        name="evidence_export",
         description="Export the session Evidence bundle to a JSON file.",
         input_model=EvidenceExportInput,
         operation=None,
         returns_evidence=False,
     ),
     ToolContract(
-        name="evidence-import",
+        name="evidence_import",
         description="Import an Evidence bundle file into the session.",
         input_model=EvidenceImportInput,
         operation=None,
         returns_evidence=False,
     ),
     ToolContract(
-        name="inspect-analysis-view",
+        name="inspect_analysis_view",
         description="Project a saved Evidence record or bundle into a summary.",
         input_model=AnalysisViewInput,
         operation=None,

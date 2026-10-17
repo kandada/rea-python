@@ -50,11 +50,15 @@ def test_hopper_analyze_round_trip(elf_file: Path, tmp_path: Path, monkeypatch) 
     socket_path = _short_socket()
 
     def handler(request: dict[str, Any]) -> dict[str, Any]:
-        assert request["operation"] == "hopper_analyze"
-        return {"id": request["id"], "ok": True, "result": {"name": "app", "procedure_count": 3}}
+        assert set(request) == {"id", "token", "method", "params"}
+        assert request["token"] == "secret"
+        assert request["method"] == "analyze_function"
+        assert request["params"] == {"procedure": "main"}
+        return {"id": request["id"], "result": {"name": "app", "procedure_count": 3}}
 
     _fake_bridge(socket_path, handler)
     monkeypatch.setenv("REA_HOPPER_BRIDGE", socket_path)
+    monkeypatch.setenv("REA_HOPPER_BRIDGE_TOKEN", "secret")
     result = HopperProvider().analyze("hopper_analyze", _target(elf_file), {}, None)
     assert result.ok
     assert result.value.result["procedure_count"] == 3
@@ -62,6 +66,7 @@ def test_hopper_analyze_round_trip(elf_file: Path, tmp_path: Path, monkeypatch) 
 
 def test_hopper_unavailable_without_bridge(elf_file: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("REA_HOPPER_BRIDGE", raising=False)
+    monkeypatch.delenv("REA_HOPPER_BRIDGE_TOKEN", raising=False)
     result = HopperProvider().analyze("hopper_analyze", _target(elf_file), {}, None)
     assert not result.ok
     assert result.error.tag == "AnalysisCapabilityUnavailableError"
@@ -78,10 +83,11 @@ def test_hopper_bridge_error(elf_file: Path, tmp_path: Path, monkeypatch) -> Non
     socket_path = _short_socket()
 
     def handler(request: dict[str, Any]) -> dict[str, Any]:
-        return {"id": request["id"], "ok": False, "error": {"message": "boom"}}
+        return {"id": request["id"], "error": {"message": "boom"}}
 
     _fake_bridge(socket_path, handler)
     monkeypatch.setenv("REA_HOPPER_BRIDGE", socket_path)
+    monkeypatch.setenv("REA_HOPPER_BRIDGE_TOKEN", "secret")
     result = HopperProvider().analyze("hopper_analyze", _target(elf_file), {}, None)
     assert not result.ok
     assert result.error.tag == "ProviderAdapterError"

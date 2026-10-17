@@ -78,9 +78,14 @@ class AndroidProvider(AnalysisProvider):
                     "has_native_libraries": has_native,
                     "native_libraries": [name for name in names if name.endswith(".so")],
                     "manifest_decoded": manifest is not None,
+                    "permissions": manifest.get("permissions", []) if manifest else [],
+                    "components": manifest.get("components", {}) if manifest else {},
+                    "application": manifest.get("application", {}) if manifest else {},
                 },
                 provider=_PROVIDER,
-                limitations=("DEX class bodies and resources are not decoded.",),
+                limitations=(
+                    "DEX class bodies and resources are not decoded; manifest components are static.",
+                ),
             )
         )
 

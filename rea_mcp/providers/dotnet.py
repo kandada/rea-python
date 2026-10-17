@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import mmap
 import struct
-from pathlib import Path
 from typing import Any
 
 from ..domain.analysis_error import AnalysisError, AnalysisInputError
@@ -18,6 +17,7 @@ from ..domain.result import Result, err, ok
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .formats.cil import CilError, disassemble, parse_method_body
 from .formats.cli_metadata import load_metadata, parse_managed_members, resolve_token
+from .formats.io import open_target
 from .formats.pe import PeInfo, parse_pe
 from .registry import TargetSupport
 
@@ -91,79 +91,86 @@ class ManagedStaticProvider(AnalysisProvider):
                 )
             )
         try:
-            data = Path(target.path).read_bytes()
+            with open_target(target.path) as data:
+                return _analyze_managed(data, operation, parameters)
         except OSError as cause:
             return err(AnalysisInputError(operation=operation, message=str(cause)))
 
-        pe = parse_pe(data)
-        if pe is None:
-            return err(AnalysisInputError(operation=operation, message="Not a PE image"))
-        if not pe.has_clr:
-            return ok(
-                AnalysisExecution(
-                    result={"is_managed": False, "runtime_version": None, "tables": {}},
-                    provider=_PROVIDER,
-                    limitations=("No CLR runtime header is present; the image is not managed.",),
-                )
-            )
 
-        metadata_offset = _rva_to_offset(pe, pe.clr_header_rva)
-        if metadata_offset is None or metadata_offset + 16 > len(data):
-            return err(
-                AnalysisInputError(operation=operation, message="CLI header is outside the image")
-            )
-        meta_rva, _meta_size = struct.unpack_from("<II", data, metadata_offset + 8)
-        metadata_root = _rva_to_offset(pe, meta_rva)
-        if metadata_root is None:
-            return err(
-                AnalysisInputError(operation=operation, message="CLI metadata is outside the image")
-            )
-
-        parsed = _parse_metadata_root(data, metadata_root)
-        if parsed is None:
-            return err(
-                AnalysisInputError(operation=operation, message="CLI metadata root is malformed")
-            )
-        runtime_version, streams = parsed
-
-        if operation == "inspect_managed_members":
-            members = parse_managed_members(data, streams)
-            if members is None:
-                return err(
-                    AnalysisInputError(
-                        operation=operation, message="CLI metadata tables could not be decoded"
-                    )
-                )
-            members["runtime_version"] = runtime_version
-            return ok(
-                AnalysisExecution(
-                    result=members,
-                    provider=_PROVIDER,
-                    limitations=("Member names and counts only; IL bodies are not decoded.",),
-                )
-            )
-
-        if operation == "disassemble_managed_method":
-            return _disassemble_method(pe, data, streams, operation, parameters)
-
-        tables = _parse_tables(data, metadata_root, streams)
-
+def _analyze_managed(
+    data: bytes | mmap.mmap,
+    operation: str,
+    parameters: dict[str, Any],
+) -> Result[AnalysisExecution, AnalysisError]:
+    pe = parse_pe(data)
+    if pe is None:
+        return err(AnalysisInputError(operation=operation, message="Not a PE image"))
+    if not pe.has_clr:
         return ok(
             AnalysisExecution(
-                result={
-                    "is_managed": True,
-                    "runtime_version": runtime_version,
-                    "streams": sorted(streams.keys()),
-                    "tables": {
-                        _TABLE_NAMES.get(index, f"Table{index:#x}"): table["rows"]
-                        for index, table in tables.items()
-                        if index in _TABLE_NAMES
-                    },
-                },
+                result={"is_managed": False, "runtime_version": None, "tables": {}},
                 provider=_PROVIDER,
-                limitations=("Member lists and IL bodies are not decoded in this version.",),
+                limitations=("No CLR runtime header is present; the image is not managed.",),
             )
         )
+
+    metadata_offset = _rva_to_offset(pe, pe.clr_header_rva)
+    if metadata_offset is None or metadata_offset + 16 > len(data):
+        return err(
+            AnalysisInputError(operation=operation, message="CLI header is outside the image")
+        )
+    meta_rva, _meta_size = struct.unpack_from("<II", data, metadata_offset + 8)
+    metadata_root = _rva_to_offset(pe, meta_rva)
+    if metadata_root is None:
+        return err(
+            AnalysisInputError(operation=operation, message="CLI metadata is outside the image")
+        )
+
+    parsed = _parse_metadata_root(data, metadata_root)
+    if parsed is None:
+        return err(
+            AnalysisInputError(operation=operation, message="CLI metadata root is malformed")
+        )
+    runtime_version, streams = parsed
+
+    if operation == "inspect_managed_members":
+        members = parse_managed_members(data, streams)
+        if members is None:
+            return err(
+                AnalysisInputError(
+                    operation=operation, message="CLI metadata tables could not be decoded"
+                )
+            )
+        members["runtime_version"] = runtime_version
+        return ok(
+            AnalysisExecution(
+                result=members,
+                provider=_PROVIDER,
+                limitations=("Member names and counts only; IL bodies are not decoded.",),
+            )
+        )
+
+    if operation == "disassemble_managed_method":
+        return _disassemble_method(pe, data, streams, operation, parameters)
+
+    tables = _parse_tables(data, metadata_root, streams)
+
+    return ok(
+        AnalysisExecution(
+            result={
+                "is_managed": True,
+                "runtime_version": runtime_version,
+                "streams": sorted(streams.keys()),
+                "tables": {
+                    _TABLE_NAMES.get(index, f"Table{index:#x}"): table["rows"]
+                    for index, table in tables.items()
+                    if index in _TABLE_NAMES
+                },
+            },
+            provider=_PROVIDER,
+            limitations=("Member lists and IL bodies are not decoded in this version.",),
+        )
+    )
 
 
 def _disassemble_method(
@@ -212,7 +219,7 @@ def _disassemble_method(
             AnalysisInputError(operation=operation, message="method body is outside the image")
         )
     try:
-        header, code = parse_method_body(bytes(data), offset)
+        header, code = parse_method_body(data, offset)
     except CilError as cause:
         return err(AnalysisInputError(operation=operation, message=str(cause)))
     instructions = disassemble(code)
@@ -312,3 +319,64 @@ def _parse_tables(
 
 
 __all__ = ["ManagedStaticProvider"]
+
+
+def _metadata_streams(data: Any, pe: Any) -> Any:
+    import struct as _struct
+
+    metadata_offset = _rva_to_offset(pe, pe.clr_header_rva)
+    if metadata_offset is None or metadata_offset + 16 > len(data):
+        return None
+    meta_rva, _meta_size = _struct.unpack_from("<II", data, metadata_offset + 8)
+    metadata_root = _rva_to_offset(pe, meta_rva)
+    if metadata_root is None:
+        return None
+    return _parse_metadata_root(data, metadata_root)
+
+
+def _member_set(path: str) -> Result[set[str], AnalysisError]:
+    from pathlib import Path as _Path
+
+    try:
+        data = _Path(path).read_bytes()
+    except OSError as cause:
+        return err(AnalysisInputError(operation="compare_managed_members", message=str(cause)))
+    pe = parse_pe(data)
+    if pe is None or not pe.has_clr:
+        return ok(set())
+    parsed = _metadata_streams(data, pe)
+    if parsed is None:
+        return ok(set())
+    _runtime, streams = parsed
+    members = parse_managed_members(data, streams)
+    if members is None:
+        return ok(set())
+    out: set[str] = set()
+    for type_entry in members["types"]:
+        for method in type_entry["methods"]:
+            out.add(f"{type_entry['full_name']}::{method['name']}")
+    return ok(out)
+
+
+def compare_managed_members(
+    left_path: str, right_path: str
+) -> Result[dict[str, Any], AnalysisError]:
+    """Compare the member sets of two managed assemblies."""
+
+    left = _member_set(left_path)
+    if not left.ok:
+        return err(left.error)
+    right = _member_set(right_path)
+    if not right.ok:
+        return err(right.error)
+    added = sorted(right.value - left.value)
+    removed = sorted(left.value - right.value)
+    return ok(
+        {
+            "status": "unchanged" if not added and not removed else "changed",
+            "added_count": len(added),
+            "removed_count": len(removed),
+            "added": added[:500],
+            "removed": removed[:500],
+        }
+    )

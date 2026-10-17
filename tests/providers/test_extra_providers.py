@@ -131,3 +131,362 @@ def test_macho_export_trie_in_layout(macho_exports_file: Path) -> None:
     )  # type: ignore[arg-type]
     assert result.ok
     assert "main" in result.value.result["exports"]
+
+
+def test_electron_fuses(electron_file: Path) -> None:
+    from rea_mcp.providers.electron import ElectronFuseProvider
+
+    result = ElectronFuseProvider().analyze(
+        "inspect_electron_fuses", _target(electron_file), {}, None
+    )
+    assert result.ok
+    assert result.value.result["is_electron"] is True
+    fuses = result.value.result["fuses"]
+    assert fuses["RunAsNode"] == "enabled"
+    assert fuses["EnableNodeCliInspectArguments"] == "disabled"
+
+
+def test_entitlements(plist_file: Path) -> None:
+    from rea_mcp.providers.apple import EntitlementsProvider
+
+    result = EntitlementsProvider().analyze("inspect_entitlements", _target(plist_file), {}, None)
+    assert result.ok
+    assert result.value.result["is_entitlements"] is True
+    assert "CFBundleIdentifier" in result.value.result["entitlements"]
+
+
+def test_compare_network_captures(har_file: Path, har_file_b: Path) -> None:
+    from rea_mcp.providers.network_capture import compare_capture_files
+
+    result = compare_capture_files(str(har_file), str(har_file_b))
+    assert result.ok
+    assert result.value["status"] == "changed"
+    assert result.value["added_count"] == 1
+    assert result.value["removed_count"] == 1
+
+
+def test_pcap_fields(pcap_dns_file: Path) -> None:
+    from rea_mcp.providers.pcap import PcapProvider
+
+    result = PcapProvider().analyze("inspect_pcap_capture", _target(pcap_dns_file), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    fields = result.value.result["fields"]
+    assert fields["packet_count"] == 1
+    assert fields["dns_queries"] == ["example.com"]
+    assert "DNS" in fields["protocols"]
+    assert "192.168.0.1->8.8.8.8" in fields["endpoints"]
+
+
+def test_pcap_not_a_capture(plain_file: Path) -> None:
+    from rea_mcp.providers.pcap import PcapProvider
+
+    result = PcapProvider().analyze("inspect_pcap_capture", _target(plain_file), {}, None)  # type: ignore[arg-type]
+    assert not result.ok
+
+
+def test_firmware_signatures(firmware_file: Path) -> None:
+    from rea_mcp.providers.firmware import FirmwareProvider
+
+    result = FirmwareProvider().analyze(
+        "inspect_firmware_regions", _target(firmware_file), {}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    descriptions = {region["description"] for region in result.value.result["regions"]}
+    assert "U-Boot uImage header" in descriptions
+    assert "SquashFS filesystem" in descriptions
+    offsets = {region["offset"] for region in result.value.result["regions"]}
+    assert 0x1000 in offsets
+
+
+def test_interface_builder(interface_builder_file: Path) -> None:
+    from rea_mcp.providers.apple import InterfaceBuilderProvider
+
+    result = InterfaceBuilderProvider().analyze(
+        "inspect_interface_builder", _target(interface_builder_file), {}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    assert result.value.result["is_interface_builder"] is True
+    assert set(result.value.result["class_names"]) == {"NSView", "NSButton"}
+
+
+def test_compare_managed_members(pe_clr_file: Path, pe_clr_file_b: Path) -> None:
+    from rea_mcp.providers.dotnet import compare_managed_members
+
+    result = compare_managed_members(str(pe_clr_file), str(pe_clr_file_b))
+    assert result.ok
+    assert result.value["status"] == "changed"
+    assert any("MyMethod" in member for member in result.value["removed"])
+    assert any("OtherMethod" in member for member in result.value["added"])
+
+
+def test_signal_capture_inventory(vcd_file: Path) -> None:
+    from rea_mcp.providers.signals import SignalCaptureProvider
+
+    result = SignalCaptureProvider().analyze("inspect_signal_capture", _target(vcd_file), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    assert result.value.result["signal_count"] == 1
+    assert "tx" in result.value.result["signals"]
+
+
+def test_decode_uart(vcd_file: Path) -> None:
+    from rea_mcp.providers.signals import SignalCaptureProvider
+
+    result = SignalCaptureProvider().analyze("decode_uart_capture", _target(vcd_file), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    assert result.value.result["bytes"] == [ord("O"), ord("K")]
+    assert result.value.result["ascii"] == "OK"
+
+
+def test_crash_dump(crash_dump_file: Path) -> None:
+    from rea_mcp.providers.crash import CrashDumpProvider
+
+    result = CrashDumpProvider().analyze("inspect_crash_dump", _target(crash_dump_file), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    assert result.value.result["signal"] == "SIGSEGV"
+    assert len(result.value.result["backtrace"]) == 2
+    assert result.value.result["registers"]["rip"].startswith("0x")
+
+
+def test_inspect_cdp_targets(plain_file: Path) -> None:
+    import http.server
+    import json
+    import threading
+
+    from rea_mcp.providers.cdp import CdpProvider
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == "/json/version":
+                body: object = {"Browser": "Chrome/120", "Protocol-Version": "1.3"}
+            elif self.path == "/json/list":
+                body = [
+                    {
+                        "type": "page",
+                        "title": "Example",
+                        "url": "https://example.com/",
+                        "webSocketDebuggerUrl": "ws://127.0.0.1/1",
+                    }
+                ]
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            payload = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            del args
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_port}"
+        result = CdpProvider().analyze(
+            "inspect_cdp_targets", _target(plain_file), {"endpoint": endpoint}, None
+        )  # type: ignore[arg-type]
+        assert result.ok
+        assert result.value.result["browser"] == "Chrome/120"
+        assert result.value.result["target_count"] == 1
+        assert result.value.result["targets"][0]["attachable"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_inspect_cdp_targets_unavailable(plain_file: Path) -> None:
+    from rea_mcp.providers.cdp import CdpProvider
+
+    result = CdpProvider().analyze(
+        "inspect_cdp_targets", _target(plain_file), {"endpoint": "http://127.0.0.1:1"}, None
+    )  # type: ignore[arg-type]
+    assert not result.ok
+
+
+def test_capture_cdp_network_with_fake_websocket(monkeypatch: object, plain_file: Path) -> None:
+    import http.server
+    import json
+    import threading
+    import types
+
+    from rea_mcp.providers.cdp import CdpProvider
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = [
+                {
+                    "type": "page",
+                    "url": "https://example.com/",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1/1",
+                }
+            ]
+            payload = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            del args
+
+    class _FakeConnection:
+        def __init__(self) -> None:
+            self._delivered = False
+
+        def settimeout(self, value: float) -> None:
+            del value
+
+        def send(self, data: str) -> None:
+            del data
+
+        def recv(self) -> str:
+            if not self._delivered:
+                self._delivered = True
+                return json.dumps(
+                    {
+                        "method": "Network.requestWillBeSent",
+                        "params": {
+                            "requestId": "1",
+                            "request": {"method": "GET", "url": "https://example.com/"},
+                            "type": "Document",
+                        },
+                    }
+                )
+            raise TimeoutError
+
+        def close(self) -> None:
+            return None
+
+    fake_websocket = types.SimpleNamespace(
+        create_connection=lambda url, timeout=5: _FakeConnection()
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "rea_mcp.providers.cdp.optional_import",
+        lambda name: fake_websocket if name == "websocket" else None,
+    )
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_port}"
+        result = CdpProvider().analyze(
+            "capture_cdp_network",
+            _target(plain_file),
+            {"endpoint": endpoint, "duration": 0.05},
+            None,
+        )  # type: ignore[arg-type]
+        assert result.ok
+        assert result.value.result["request_count"] == 1
+        request = result.value.result["requests"][0]
+        assert request["method"] == "GET"
+        assert request["url"] == "https://example.com/"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def _script(tmp_path: Path, name: str, body: str) -> Path:
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_pcapng_fields(pcapng_dns_file: Path) -> None:
+    from rea_mcp.providers.pcap import PcapProvider
+
+    result = PcapProvider().analyze("inspect_pcap_capture", _target(pcapng_dns_file), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    fields = result.value.result["fields"]
+    assert fields["packet_count"] == 1
+    assert fields["dns_queries"] == ["example.com"]
+    assert fields["linktypes"] == [1]
+
+
+def test_pcap_tshark_enrichment(monkeypatch: object, tmp_path: Path, pcap_dns_file: Path) -> None:
+    from rea_mcp.providers.pcap import PcapProvider
+
+    script = _script(
+        tmp_path,
+        "tshark",
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "io,phs" ]; then echo "Protocol Hierarchy"; exit 0; fi\n'
+        "done\nexit 0\n",
+    )
+    monkeypatch.setenv("REA_TSHARK", str(script))  # type: ignore[attr-defined]
+    result = PcapProvider().analyze("inspect_pcap_capture", _target(pcap_dns_file), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    assert "Protocol Hierarchy" in result.value.result["protocol_hierarchy"]
+
+
+def test_firmware_binwalk_enrichment(
+    monkeypatch: object, tmp_path: Path, firmware_file: Path
+) -> None:
+    from rea_mcp.providers.firmware import FirmwareProvider
+
+    script = _script(
+        tmp_path,
+        "binwalk",
+        'echo "0        0x0             U-Boot uImage header"\n'
+        'echo "4096     0x1000          SquashFS filesystem"\n',
+    )
+    monkeypatch.setenv("REA_BINWALK", str(script))  # type: ignore[attr-defined]
+    result = FirmwareProvider().analyze(
+        "inspect_firmware_regions", _target(firmware_file), {}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    assert len(result.value.result["binwalk_regions"]) == 2
+    assert result.value.result["binwalk_regions"][1]["offset"] == 4096
+
+
+def test_packet_fields(pcap_dns_file: Path) -> None:
+    from rea_mcp.providers.pcap import PcapProvider
+
+    result = PcapProvider().analyze(
+        "inspect_packet_fields", _target(pcap_dns_file), {"limit": 10}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    fields = result.value.result["fields"]
+    assert fields["packet_count"] == 1
+    packet = fields["packets"][0]
+    assert packet["src"] == "192.168.0.1"
+    assert packet["dst"] == "8.8.8.8"
+    assert packet["dns_query"] == "example.com"
+
+
+def test_firmware_extract(firmware_file: Path, tmp_path: Path) -> None:
+    from rea_mcp.providers.firmware import FirmwareProvider
+
+    output = tmp_path / "extracted"
+    result = FirmwareProvider().analyze(
+        "extract_firmware",
+        _target(firmware_file),
+        {"output_directory": str(output)},
+        None,
+    )  # type: ignore[arg-type]
+    assert result.ok
+    assert result.value.result["extracted_count"] == 2
+    for item in result.value.result["extracted"]:
+        assert Path(item["path"]).is_file()
+
+
+def test_android_manifest_components_real() -> None:
+    import os
+
+    import pytest as _pytest
+
+    fixture = os.environ.get("REA_APK_FIXTURE")
+    if not fixture or not Path(fixture).is_file():
+        _pytest.skip("requires REA_APK_FIXTURE (a real APK with a manifest)")
+    from rea_mcp.providers.android import AndroidProvider
+
+    result = AndroidProvider().analyze("inspect_android_package", _target(Path(fixture)), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    facts = result.value.result
+    assert facts["package"]
+    assert any((facts.get("components") or {}).values())

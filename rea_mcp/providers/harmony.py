@@ -73,6 +73,7 @@ class HarmonyProvider(AnalysisProvider):
                     "version_name": app.get("versionName", module_info.get("versionName")),
                     "version_code": app.get("versionCode", module_info.get("versionCode")),
                     "module_name": module_info.get("name"),
+                    "abilities": module_info.get("abilities") or [],
                     "entry_count": len(names),
                     "abc_files": abc_files,
                     "native_libraries": so_files,

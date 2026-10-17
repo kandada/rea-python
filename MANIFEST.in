@@ -3,6 +3,6 @@ include LICENSE
 include DISCLAIMER.md
 include THIRD_PARTY_NOTICES.md
 include pyproject.toml
-recursive-include rea_mcp py.typed
+recursive-include rea_mcp py.typed data/*.md
 recursive-include skills *
 global-exclude __pycache__ *.py[cod]

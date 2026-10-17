@@ -12,7 +12,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ..domain.analysis_error import (
     AnalysisCapabilityUnavailableError,
@@ -20,9 +20,10 @@ from ..domain.analysis_error import (
     AnalysisInputError,
     NoBinaryOpenError,
 )
-from ..domain.analysis_profile import AnalysisProfile, create_analysis_profile
+from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity, create_analysis_profile
 from ..domain.binary_target import BinaryTarget, TargetFormat, TargetKind, parse_binary_target
 from ..domain.evidence import Evidence, EvidenceObservation, create_evidence
+from ..domain.residual_unknown import RecordUnknownInput, Resolution
 from ..domain.result import Result, err, ok
 from ..providers.base import AnalysisExecution, AnalysisProvider
 from ..providers.registry import AnalysisProviderRegistry
@@ -225,6 +226,25 @@ class BinarySession:
 
     # -- records -----------------------------------------------------------
 
+    def retain_payload(self, operation: str, payload: dict[str, Any]) -> str:
+        """Retain an oversized payload as Evidence and return its evidence id.
+
+        Used by the transport when a response exceeds the configured budget: the
+        full payload is preserved as Evidence and the client receives a compact
+        resource-constraint error carrying the ``evidence_reference``.
+        """
+
+        provider = ProviderIdentity(id="transport", name="REA-Python transport", version="1")
+        observation = EvidenceObservation(
+            operation=operation,
+            result={"retained_payload": payload},
+            parameters={},
+            limitations=["Payload retained by the transport budget interceptor."],
+        )
+        evidence = create_evidence(self._target, provider, observation)
+        self._records.record_evidence(evidence)
+        return evidence.evidence_id
+
     def export_bundle(self) -> dict[str, Any]:
         bundle: dict[str, Any] = self._records.ledger.export_bundle().model_dump()
         return bundle
@@ -237,6 +257,81 @@ class BinarySession:
 
     def list_unknowns(self) -> list[Any]:
         return [unknown.model_dump() for unknown in self._records.list_unknowns()]
+
+    def _mutation_evidence(self, operation: str, parameters: dict[str, Any]) -> Evidence:
+        return create_evidence(
+            self._target,
+            ProviderIdentity(id="rea-mcp", name="rea-mcp", version="1"),
+            EvidenceObservation(
+                operation=operation,
+                result=parameters,
+                parameters=parameters,
+                confidence="derived",
+                authority="analyst-inference",
+            ),
+        )
+
+    def record_unknown(
+        self,
+        question: str,
+        domain: str,
+        *,
+        severity: str = "medium",
+        required_authority: str | None = None,
+        required_confidence: str = "observed",
+    ) -> Result[dict[str, Any], AnalysisError]:
+        mutation = self._mutation_evidence(
+            "record_unknown", {"question": question, "domain": domain}
+        )
+        recorded = self._records.record_evidence(mutation)
+        if not recorded.ok:
+            return err(recorded.error)
+        try:
+            input_ = RecordUnknownInput(
+                question=question,
+                domain=domain,
+                severity=cast("Any", severity),
+                required_authority=cast("Any", required_authority),
+                required_confidence=cast("Any", required_confidence),
+            )
+        except Exception as cause:
+            return err(AnalysisInputError(operation="record_unknown", message=str(cause)))
+        result = self._records.record_unknown(input_, [mutation.evidence_id])
+        if not result.ok:
+            return err(result.error)
+        return ok(result.value.model_dump())
+
+    def update_unknown(
+        self,
+        unknown_id: str,
+        status: str,
+        *,
+        severity: str | None = None,
+        resolution: dict[str, Any] | None = None,
+    ) -> Result[dict[str, Any], AnalysisError]:
+        mutation = self._mutation_evidence(
+            "update_unknown", {"unknown_id": unknown_id, "status": status}
+        )
+        recorded = self._records.record_evidence(mutation)
+        if not recorded.ok:
+            return err(recorded.error)
+        kwargs: dict[str, Any] = {}
+        if severity is not None:
+            kwargs["severity"] = severity
+        if resolution is not None:
+            try:
+                kwargs["resolution"] = Resolution(**resolution)
+            except Exception as cause:
+                return err(AnalysisInputError(operation="update_unknown", message=str(cause)))
+        result = self._records.update_unknown(
+            unknown_id,
+            status=cast("Any", status),
+            mutation_evidence_id=mutation.evidence_id,
+            **kwargs,
+        )
+        if not result.ok:
+            return err(result.error)
+        return ok(result.value.model_dump())
 
     # -- introspection -----------------------------------------------------
 

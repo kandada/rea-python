@@ -110,11 +110,12 @@ def _parse_start_element(
 ) -> dict[str, Any] | None:
     cursor = header_size
     try:
-        _line, _comment, name_index = struct.unpack_from("<III", body, cursor)
-        cursor += 12
-        _attr_start, _attr_size, attr_count = struct.unpack_from("<HHH", body, cursor)
-        cursor += 6
-        cursor += 6  # idIndex, classIndex, styleIndex
+        _namespace, name_index = struct.unpack_from("<II", body, cursor)
+        cursor += 8
+        attr_start, _attr_size, attr_count, _id_index, _class_index, _style_index = (
+            struct.unpack_from("<HHHHHH", body, cursor)
+        )
+        cursor = header_size + attr_start
     except struct.error:
         return None
     name = _string(strings, name_index)
@@ -160,17 +161,75 @@ def _string(strings: list[str], index: int) -> str:
     return strings[index]
 
 
+_COMPONENT_ELEMENTS = {
+    "activity": "activities",
+    "activity-alias": "activity_aliases",
+    "service": "services",
+    "receiver": "receivers",
+    "provider": "providers",
+}
+_COMPONENT_ATTRIBUTES = (
+    "name",
+    "exported",
+    "permission",
+    "enabled",
+    "launchMode",
+    "process",
+    "authorities",
+)
+
+
 def _project_manifest(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
+    manifest: dict[str, Any] | None = None
+    permissions: list[str] = []
+    components: dict[str, list[dict[str, Any]]] = {
+        "activities": [],
+        "activity_aliases": [],
+        "services": [],
+        "receivers": [],
+        "providers": [],
+    }
+    application: dict[str, Any] = {}
     for element in elements:
-        if element["name"] != "manifest":
-            continue
+        name = element["name"]
         attributes = element["attributes"]
-        return {
-            "package": attributes.get("package"),
-            "version_name": attributes.get("versionName"),
-            "version_code": attributes.get("versionCode"),
-        }
-    return None
+        if name == "manifest":
+            manifest = {
+                "package": attributes.get("package"),
+                "version_name": attributes.get("versionName"),
+                "version_code": attributes.get("versionCode"),
+            }
+        elif name == "uses-permission":
+            permission = attributes.get("name")
+            if permission:
+                permissions.append(str(permission))
+        elif name == "application":
+            application = {
+                key: attributes.get(key)
+                for key in (
+                    "name",
+                    "label",
+                    "debuggable",
+                    "allowBackup",
+                    "usesCleartextTraffic",
+                    "networkSecurityConfig",
+                )
+                if attributes.get(key) is not None
+            }
+        elif name in _COMPONENT_ELEMENTS:
+            entry = {
+                key: attributes.get(key)
+                for key in _COMPONENT_ATTRIBUTES
+                if attributes.get(key) is not None
+            }
+            if entry.get("name"):
+                components[_COMPONENT_ELEMENTS[name]].append(entry)
+    if manifest is None:
+        return None
+    manifest["permissions"] = sorted(set(permissions))
+    manifest["components"] = components
+    manifest["application"] = application
+    return manifest
 
 
 __all__ = ["AxmlError", "parse_axml"]

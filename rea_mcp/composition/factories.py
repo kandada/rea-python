@@ -5,12 +5,28 @@ from __future__ import annotations
 from ..application.session import BinarySession
 from ..config.settings import AppConfig
 from ..providers.android import AndroidProvider
-from ..providers.apple import AssetCatalogProvider, KeyedArchiveProvider
+from ..providers.android_deep import AndroidDeepProvider
+from ..providers.apple import (
+    AssetCatalogProvider,
+    EntitlementsProvider,
+    InterfaceBuilderProvider,
+    KeyedArchiveProvider,
+)
 from ..providers.artifact import ArtifactProvider
 from ..providers.base import AnalysisProvider
 from ..providers.binary_layout import BinaryLayoutProvider
+from ..providers.cdp import CdpProvider
+from ..providers.crash import CrashDumpProvider
+from ..providers.debug_sessions import DebugSessionProvider
 from ..providers.dotnet import ManagedStaticProvider
-from ..providers.engines import AdbProvider, ApktoolProvider, KunaProvider, SignalProvider
+from ..providers.electron import ElectronFuseProvider
+from ..providers.engines import (
+    AdbProvider,
+    ApktoolProvider,
+    JadxProvider,
+    KunaProvider,
+    SignalProvider,
+)
 from ..providers.evm import EvmInterfaceProvider
 from ..providers.firmware import FirmwareProvider
 from ..providers.flutter import FlutterBuildProvider
@@ -35,8 +51,10 @@ from ..providers.reference import ReferenceSourceProvider
 from ..providers.registry import AnalysisProviderRegistry
 from ..providers.rizin import RizinProvider
 from ..providers.rust import RustBinaryProvider
+from ..providers.signals import SignalCaptureProvider
 from ..providers.sqlite import SqliteDatabaseProvider
 from ..providers.wasm import WasmArtifactProvider
+from ..providers.web_runtime import WebRuntimeProvider
 
 
 def build_providers() -> list[AnalysisProvider]:
@@ -54,6 +72,7 @@ def build_providers() -> list[AnalysisProvider]:
         SqliteDatabaseProvider(),
         ArtifactProvider(),
         AndroidProvider(),
+        AndroidDeepProvider(),
         FlutterBuildProvider(),
         WasmArtifactProvider(),
         EvmInterfaceProvider(),
@@ -63,7 +82,13 @@ def build_providers() -> list[AnalysisProvider]:
         RizinProvider(),
         PcapProvider(),
         FirmwareProvider(),
+        SignalCaptureProvider(),
+        CrashDumpProvider(),
+        CdpProvider(),
+        WebRuntimeProvider(),
+        DebugSessionProvider(),
         ApktoolProvider(),
+        JadxProvider(),
         AdbProvider(),
         SignalProvider(),
         KunaProvider(),
@@ -80,6 +105,9 @@ def build_providers() -> list[AnalysisProvider]:
         JavaScriptApplicationProvider(),
         KeyedArchiveProvider(),
         AssetCatalogProvider(),
+        EntitlementsProvider(),
+        InterfaceBuilderProvider(),
+        ElectronFuseProvider(),
         PeResourcesProvider(),
     ]
 

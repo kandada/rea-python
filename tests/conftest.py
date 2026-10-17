@@ -617,3 +617,212 @@ def plain_file(tmp_path: Path) -> Path:
     path = tmp_path / "notes.txt"
     path.write_bytes(b"just some text\n")
     return path
+
+
+@pytest.fixture
+def electron_file(tmp_path: Path) -> Path:
+    sentinel = b"dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX"
+    wire = bytes([0x31, 0x31, 0x30, 0x30, 0x31, 0x30, 0x30, 0x30])  # enabled/disabled pattern
+    path = tmp_path / "electron.bin"
+    path.write_bytes(b"\x7fELF" + b"\x00" * 56 + sentinel + bytes([1, len(wire)]) + wire)
+    return path
+
+
+def _dns_ethernet_frame(query: str = "example.com") -> bytes:
+    labels = query.split(".")
+    qname = b"".join(bytes([len(label)]) + label.encode() for label in labels) + b"\x00"
+    dns = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + qname + struct.pack(">HH", 1, 1)
+    udp = struct.pack(">HHHH", 40000, 53, 8 + len(dns), 0) + dns
+    ip = struct.pack(
+        ">BBHHHBBH4s4s",
+        0x45,
+        0,
+        20 + len(udp),
+        0,
+        0,
+        64,
+        17,
+        0,
+        bytes([192, 168, 0, 1]),
+        bytes([8, 8, 8, 8]),
+    )
+    ethernet = bytes(6) + bytes([1, 2, 3, 4, 5, 6]) + struct.pack(">H", 0x0800)
+    return ethernet + ip + udp
+
+
+def build_pcap_with_dns(query: str = "example.com") -> bytes:
+    """Build a classic little-endian pcap with one Ethernet/IPv4/UDP DNS query."""
+
+    frame = _dns_ethernet_frame(query)
+    global_header = b"\xd4\xc3\xb2\xa1" + struct.pack("<HHIIII", 2, 4, 0, 0, 65535, 1)
+    record = struct.pack("<IIII", 1_700_000_000, 0, len(frame), len(frame)) + frame
+    return global_header + record
+
+
+def build_pcapng_with_dns(query: str = "example.com") -> bytes:
+    """Build a minimal pcapng with one Ethernet/IPv4/UDP DNS packet."""
+
+    def block(block_type: int, body: bytes) -> bytes:
+        total = 12 + len(body)
+        return struct.pack("<II", block_type, total) + body + struct.pack("<I", total)
+
+    section = block(
+        0x0A0D0D0A,
+        struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1),
+    )
+    interface = block(1, struct.pack("<HHI", 1, 0, 65535))
+    frame = _dns_ethernet_frame(query)
+    padded = frame + b"\x00" * ((-len(frame)) % 4)
+    enhanced = block(
+        6,
+        struct.pack("<IIIII", 0, 0, 1_700_000_000, len(frame), len(frame)) + padded,
+    )
+    return section + interface + enhanced
+
+
+@pytest.fixture
+def pcap_dns_file(tmp_path: Path) -> Path:
+    path = tmp_path / "dns.pcap"
+    path.write_bytes(build_pcap_with_dns())
+    return path
+
+
+@pytest.fixture
+def pcapng_dns_file(tmp_path: Path) -> Path:
+    path = tmp_path / "dns.pcapng"
+    path.write_bytes(build_pcapng_with_dns())
+    return path
+
+
+@pytest.fixture
+def firmware_file(tmp_path: Path) -> Path:
+    blob = bytearray(b"\x00" * 0x2000)
+    blob[0:4] = b"\x27\x05\x19\x56"
+    blob[0x1000:0x1004] = b"hsqs"
+    path = tmp_path / "firmware.bin"
+    path.write_bytes(bytes(blob))
+    return path
+
+
+@pytest.fixture
+def pe_clr_file_b(tmp_path: Path) -> Path:
+    path = tmp_path / "managed_b.exe"
+    path.write_bytes(
+        build_pe(
+            clr=True,
+            metadata_blob=metadata_blob(
+                type_name="OtherType", namespace="Other.Namespace", method_name="OtherMethod"
+            ),
+        )
+    )
+    return path
+
+
+@pytest.fixture
+def interface_builder_file(tmp_path: Path) -> Path:
+    import plistlib
+
+    path = tmp_path / "Main.nib"
+    path.write_bytes(
+        plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$objects": [
+                    {"$classname": "NSView", "$classes": ["NSView"]},
+                    {"$classname": "NSButton"},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
+    )
+    return path
+
+
+@pytest.fixture
+def big_plist_file(tmp_path: Path) -> Path:
+    import plistlib
+
+    path = tmp_path / "big.plist"
+    path.write_bytes(plistlib.dumps({"blob": "x" * 6000}))
+    return path
+
+
+def build_uart_vcd(data: bytes, *, baud: int = 9600, timescale_seconds: float = 1e-6) -> str:
+    bit = (1.0 / baud) / timescale_seconds
+    levels: list[tuple[int, str]] = [(0, "1")]
+
+    def emit(tick: float, level: str) -> None:
+        if levels[-1][1] != level:
+            levels.append((round(tick), level))
+
+    clock = 0.0
+    for byte in data:
+        emit(clock, "0")
+        for index in range(8):
+            emit(clock + (1 + index) * bit, "1" if (byte >> index) & 1 else "0")
+        emit(clock + 9 * bit, "1")
+        clock += 10 * bit
+    lines = [f"#{tick}\n{level}!" for tick, level in levels]
+    return (
+        "$timescale 1 us $end\n"
+        "$scope module logic $end\n"
+        "$var wire 1 ! tx $end\n"
+        "$upscope $end\n"
+        "$enddefinitions $end\n" + "\n".join(lines) + "\n"
+    )
+
+
+@pytest.fixture
+def vcd_file(tmp_path: Path) -> Path:
+    path = tmp_path / "uart.vcd"
+    path.write_text(build_uart_vcd(b"OK"), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def crash_dump_file(tmp_path: Path) -> Path:
+    path = tmp_path / "crash.txt"
+    path.write_text(
+        "Program received signal SIGSEGV, Segmentation fault.\n"
+        "0x0000555555555150 in main ()\n"
+        "rax            0x0                 0\n"
+        "rip            0x0000555555555150  0x555555555150 <main+16>\n"
+        "#0  0x0000555555555150 in main ()\n"
+        "#1  0x00007ffff7e08d90 in __libc_start_main ()\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def har_file_b(tmp_path: Path) -> Path:
+    import json
+
+    path = tmp_path / "capture_b.har"
+    path.write_text(
+        json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "request": {"method": "GET", "url": "https://example.com/a"},
+                            "response": {
+                                "status": 200,
+                                "content": {"mimeType": "text/html", "size": 10},
+                            },
+                        },
+                        {
+                            "request": {"method": "DELETE", "url": "https://example.com/c"},
+                            "response": {
+                                "status": 204,
+                                "content": {"mimeType": "text/plain", "size": 0},
+                            },
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path

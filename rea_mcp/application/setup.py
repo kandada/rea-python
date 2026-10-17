@@ -65,4 +65,55 @@ def write_registration(
     return ok({"written": str(destination), "backup": backup})
 
 
-__all__ = ["KNOWN_CLIENT_CONFIGS", "mcp_server_registration", "setup_plan", "write_registration"]
+def write_all_registrations(
+    base: str, module: str = "rea_mcp", *, overwrite: bool = False
+) -> Result[dict[str, Any], AnalysisError]:
+    """Write the registration into every known client config under ``base``.
+
+    ``base`` is a sandbox root joined with each known config's relative path, so
+    this never touches a caller's real client configuration.
+    """
+
+    root = Path(base).expanduser()
+    written: list[str] = []
+    skipped: list[str] = []
+    for location in KNOWN_CLIENT_CONFIGS:
+        relative = Path(location).expanduser().as_posix().lstrip("/")
+        destination = root / relative
+        result = write_registration(str(destination), module, overwrite=overwrite)
+        if result.ok:
+            written.append(result.value["written"])
+        else:
+            skipped.append(str(destination))
+    return ok({"base": str(root), "written": written, "skipped": skipped})
+
+
+def skill_markdown() -> str:
+    """Return the bundled agent skill text."""
+
+    from importlib.resources import files
+
+    return (files("rea_mcp") / "data" / "skill.md").read_text(encoding="utf-8")
+
+
+def install_skill(directory: str) -> Result[dict[str, Any], AnalysisError]:
+    """Copy the bundled agent skill into ``<directory>/reverse-engineer-anything/SKILL.md``."""
+
+    destination = Path(directory).expanduser() / "reverse-engineer-anything" / "SKILL.md"
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(skill_markdown(), encoding="utf-8")
+    except OSError as cause:
+        return err(AnalysisInputError(operation="setup", message=str(cause)))
+    return ok({"installed": str(destination)})
+
+
+__all__ = [
+    "KNOWN_CLIENT_CONFIGS",
+    "install_skill",
+    "mcp_server_registration",
+    "setup_plan",
+    "skill_markdown",
+    "write_all_registrations",
+    "write_registration",
+]

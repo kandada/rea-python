@@ -260,4 +260,46 @@ def _resolve_mitmproxy() -> str | None:
     return resolution.path if resolution.available else None
 
 
-__all__ = ["MitmproxyProvider", "NetworkCaptureProvider"]
+def load_capture_requests(path: str) -> Result[tuple[str, list[str]], AnalysisError]:
+    """Return ``(format, ["METHOD url", ...])`` for a HAR or SAZ capture."""
+
+    target = Path(path)
+    try:
+        if target.suffix.lower() == ".saz":
+            with zipfile.ZipFile(target) as archive:
+                sessions = _project_saz(archive, archive.namelist())
+            return ok(("saz", [str(session["request"]) for session in sessions]))
+        data = json.loads(target.read_text(encoding="utf-8"))
+        requests, _hosts, _methods = _project_har_entries(data.get("log", {}).get("entries", []))
+        return ok(("har", [f"{request['method']} {request['url']}" for request in requests]))
+    except (OSError, json.JSONDecodeError, zipfile.BadZipFile) as cause:
+        return err(AnalysisInputError(operation="compare_network_captures", message=str(cause)))
+
+
+def compare_capture_files(left_path: str, right_path: str) -> Result[dict[str, Any], AnalysisError]:
+    """Compare two captures by their request method+URL sets."""
+
+    left = load_capture_requests(left_path)
+    if not left.ok:
+        return err(left.error)
+    right = load_capture_requests(right_path)
+    if not right.ok:
+        return err(right.error)
+    left_set = set(left.value[1])
+    right_set = set(right.value[1])
+    added = sorted(right_set - left_set)
+    removed = sorted(left_set - right_set)
+    return ok(
+        {
+            "status": "unchanged" if not added and not removed else "changed",
+            "left_format": left.value[0],
+            "right_format": right.value[0],
+            "added_count": len(added),
+            "removed_count": len(removed),
+            "added": added[:200],
+            "removed": removed[:200],
+        }
+    )
+
+
+__all__ = ["MitmproxyProvider", "NetworkCaptureProvider", "compare_capture_files"]
