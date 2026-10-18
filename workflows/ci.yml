@@ -1,0 +1,71 @@
+name: CI
+
+# Run CI for branch pushes and pull requests only. Tag pushes (including tags
+# created by publishing a GitHub Release) must not trigger CI.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Format check
+        run: ruff format --check .
+      - name: Typecheck
+        run: mypy
+      - name: Test
+        run: pytest --cov=rea_mcp --cov-report=term-missing
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Verify wheel contents
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          assert any(n == "rea_mcp/__init__.py" for n in names), names
+          assert any(n == "rea/__init__.py" for n in names), "rea alias missing"
+          assert any(n == "rea_python/__init__.py" for n in names), "rea_python alias missing"
+          assert not any(n.startswith("tests/") for n in names), "tests leaked into wheel"
+          print("wheel ok:", wheel)
+          PY
