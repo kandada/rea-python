@@ -1,8 +1,12 @@
 name: CI
 
+# Run CI for branch pushes and pull requests only. Tag pushes (including tags
+# created by publishing a GitHub Release) must not trigger CI.
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

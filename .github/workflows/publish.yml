@@ -1,13 +1,12 @@
 name: Publish
 
-# Publishes to PyPI via Trusted Publishing when a GitHub Release is published
-# (or on manual dispatch). Configure the trusted publisher on PyPI first:
+# Publishes to PyPI via Trusted Publishing **only on manual dispatch**.
+# Publishing a GitHub Release intentionally does NOT publish to PyPI.
+# Configure the trusted publisher on PyPI first:
 #   https://docs.pypi.org/trusted-publishers/
 # Project: rea-mcp | Workflow: publish.yml | Environment: pypi
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 jobs:
