@@ -127,8 +127,31 @@ class GhidraProvider(_OptionalEngine):
         bridge = self._select_bridge()
         assert bridge is not None
         pseudocode: str | None = None
-        with bridge.open_program(target.path) as flat_api:
+        open_options: dict[str, Any] = {}
+        if parameters.get("language"):
+            open_options["language"] = str(parameters["language"])
+        if parameters.get("compiler"):
+            open_options["compiler"] = str(parameters["compiler"])
+        entry_limitations: list[str] = []
+        with bridge.open_program(target.path, **open_options) as flat_api:
             program = flat_api.getCurrentProgram()
+            entry = parameters.get("entry")
+            if entry:
+                try:
+                    value = int(str(entry), 0)
+                    address = (
+                        flat_api.toAddr(value)
+                        if hasattr(flat_api, "toAddr")
+                        else program.getAddressFactory().getDefaultAddressSpace().getAddress(value)
+                    )
+                    if hasattr(flat_api, "createLabel"):
+                        flat_api.createLabel(address, "rea_entry")
+                    if hasattr(flat_api, "addEntryPoint"):
+                        flat_api.addEntryPoint(address)
+                except Exception as cause:
+                    entry_limitations.append(
+                        f"Could not apply entry {entry}: {type(cause).__name__}"
+                    )
             language = program.getLanguageID().toString()
             functions = [fn.getName() for fn in program.getFunctionManager().getFunctions(True)]
             if operation == "ghidra_decompile":
@@ -159,6 +182,7 @@ class GhidraProvider(_OptionalEngine):
                     "pseudocode": pseudocode,
                 },
                 provider=self.identity(),
+                limitations=tuple(entry_limitations),
             )
         )
 

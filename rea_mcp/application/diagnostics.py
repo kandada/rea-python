@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ..providers.base import AnalysisProvider
@@ -29,10 +30,27 @@ def doctor_report(providers: list[AnalysisProvider]) -> dict[str, Any]:
                 "unavailable_operations": unavailable,
             }
         )
+    timeout_raw = os.environ.get("REA_JADX_OPERATION_TIMEOUT_MS")
+    timeout_ms = 120_000
+    timeout_source = "default"
+    if timeout_raw:
+        try:
+            parsed = int(timeout_raw)
+            if 1 <= parsed <= 2_147_483_647:
+                timeout_ms = parsed
+                timeout_source = "environment"
+            else:
+                timeout_source = "invalid"
+        except ValueError:
+            timeout_source = "invalid"
     return {
         "healthy": all(entry["available"] for entry in entries),
         "provider_count": len(entries),
         "providers": entries,
+        "environment": {
+            "jadx_operation_timeout_ms": timeout_ms,
+            "jadx_operation_timeout_source": timeout_source,
+        },
     }
 
 

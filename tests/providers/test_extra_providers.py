@@ -490,3 +490,42 @@ def test_android_manifest_components_real() -> None:
     facts = result.value.result
     assert facts["package"]
     assert any((facts.get("components") or {}).values())
+
+
+def test_dmg_inventory(tmp_path: Path) -> None:
+    import struct
+
+    from rea_mcp.providers.artifact import ArtifactProvider
+
+    path = tmp_path / "sample.dmg"
+    trailer = bytearray(512)
+    trailer[0:4] = b"koly"
+    struct.pack_into(">I", trailer, 4, 4)
+    struct.pack_into(">Q", trailer, 24, 4096)
+    struct.pack_into(">Q", trailer, 32, 8192)
+    struct.pack_into(">Q", trailer, 216, 12288)
+    struct.pack_into(">Q", trailer, 224, 256)
+    struct.pack_into(">Q", trailer, 492, 16)
+    path.write_bytes(b"\x00" * 128 + bytes(trailer))
+    result = ArtifactProvider().analyze("inspect_artifact", _target(path), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["format"] == "dmg"
+    assert data["dmg"]["version"] == 4
+    assert data["dmg"]["data_fork_offset"] == 4096
+    assert data["dmg"]["sector_count"] == 16
+
+
+def test_asar_integrity(asar_integrity_file: Path) -> None:
+    from rea_mcp.providers.javascript import JavaScriptApplicationProvider
+
+    result = JavaScriptApplicationProvider().analyze(
+        "analyze_javascript_application", _target(asar_integrity_file), {}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    integrity = result.value.result["asar_integrity"]
+    assert integrity["entry_count"] == 1
+    assert integrity["algorithms"] == ["SHA256"]
+    entry = integrity["entries"][0]
+    assert entry["path"] == "main.js"
+    assert entry["block_count"] == 1

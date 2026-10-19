@@ -294,8 +294,9 @@ for arg in "$@"; do
   if [ "$prev" = "-o" ]; then out="$arg"; fi
   prev="$arg"
 done
-mkdir -p "$out/res/values" "$out/smali/com/example"
-printf '<resources/>\\n' > "$out/res/values/strings.xml"
+mkdir -p "$out/res/values" "$out/res/values-de" "$out/smali/com/example"
+printf '<resources><string name="hello">Hello</string></resources>\n' > "$out/res/values/strings.xml"
+printf '<resources><string name="hello">Hallo</string></resources>\n' > "$out/res/values-de/strings.xml"
 printf '.class public Lcom/example/Main;\\n' > "$out/smali/com/example/Main.smali"
 printf '<manifest/>\\n' > "$out/AndroidManifest.xml"
 """
@@ -425,6 +426,8 @@ def test_ghidra_analyze_with_fake_pyhidra(monkeypatch: pytest.MonkeyPatch, elf_f
         def getFunctionManager(self) -> _FunctionManager:
             return _FunctionManager()
 
+    events: list[tuple[object, ...]] = []
+
     class _FlatApi:
         def getCurrentProgram(self) -> _Program:
             return _Program()
@@ -432,6 +435,15 @@ def test_ghidra_analyze_with_fake_pyhidra(monkeypatch: pytest.MonkeyPatch, elf_f
         def getFunction(self, name: str) -> None:
             del name
             return None
+
+        def toAddr(self, value: int) -> int:
+            return value
+
+        def createLabel(self, address: int, name: str) -> None:
+            events.append(("label", address, name))
+
+        def addEntryPoint(self, address: int) -> None:
+            events.append(("entry", address))
 
     class _Context:
         def __enter__(self) -> _FlatApi:
@@ -441,13 +453,33 @@ def test_ghidra_analyze_with_fake_pyhidra(monkeypatch: pytest.MonkeyPatch, elf_f
             del args
             return False
 
-    fake_pyhidra = types.SimpleNamespace(open_program=lambda path: _Context())
+    captured: dict[str, object] = {}
+
+    def _open(path: str, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return _Context()
+
+    fake_pyhidra = types.SimpleNamespace(open_program=_open)
     monkeypatch.setitem(sys.modules, "pyhidra", fake_pyhidra)
     monkeypatch.setattr(
         "rea_mcp.providers.optional_engines.optional_import",
         lambda name: fake_pyhidra if name == "pyhidra" else None,
     )
-    result = GhidraProvider().analyze("ghidra_analyze", _target(elf_file), {}, None)
+    result = GhidraProvider().analyze(
+        "ghidra_analyze",
+        _target(elf_file),
+        {
+            "language": "68000:BE:32:default",
+            "compiler": "default",
+            "entry": "0x1000",
+        },
+        None,
+    )
+    assert captured == {
+        "language": "68000:BE:32:default",
+        "compiler": "default",
+    }
+    assert events == [("label", 0x1000, "rea_entry"), ("entry", 0x1000)]
     assert result.ok
     assert result.value.result["language"] == "x86:LE:64:default"
     assert result.value.result["function_count"] == 2
@@ -596,3 +628,92 @@ def test_rizin_debug_session_real() -> None:
     assert status.ok
     closed = provider.analyze("close_rizin_debug_session", target, {"session_id": session_id}, None)
     assert closed.ok
+
+
+def test_apktool_string_tables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, apk_file: Path
+) -> None:
+    script = _fake_script(tmp_path, "apktool", _APKTOOL_FAKE)
+    monkeypatch.setenv("REA_APKTOOL_COMMAND", str(script))
+    result = ApktoolProvider().analyze(
+        "decode_android_resources",
+        _target(apk_file),
+        {"include_strings": True, "locales": ["de"], "string_tables_only": True},
+        None,
+    )
+    assert result.ok
+    data = result.value.result
+    assert data["strings"] == []
+    assert data["locales"] == ["de"]
+    tables = {table["locale"]: table for table in data["string_tables"]}
+    assert set(tables) == {None, "de"}
+    assert tables[None]["strings"][0]["value"] == "Hello"
+    assert tables["de"]["strings"][0]["value"] == "Hallo"
+
+
+def test_jadx_operation_timeout_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rea_mcp.providers.engines import _jadx_operation_timeout
+
+    monkeypatch.delenv("REA_JADX_OPERATION_TIMEOUT_MS", raising=False)
+    assert _jadx_operation_timeout() == 120.0
+    monkeypatch.setenv("REA_JADX_OPERATION_TIMEOUT_MS", "5000")
+    assert _jadx_operation_timeout() == 5.0
+    monkeypatch.setenv("REA_JADX_OPERATION_TIMEOUT_MS", "not-a-number")
+    assert _jadx_operation_timeout() == 120.0
+
+
+_KUNA_FAKE = """
+cmd="$1"
+case "$cmd" in
+  functions) echo '[{"name":"main","address":"0x1000"},{"name":"helper","address":"0x2000"}]' ;;
+  strings) echo '[{"value":"hello","address":"0x3000"}]' ;;
+  xrefs) echo '[{"from":"0x4000","to":"0x1000"}]' ;;
+  decompile) echo '// pseudocode' ;;
+  decompile-graph) echo '[{"from":"0x1000","to":"0x2000"}]' ;;
+  decompile-project)
+    out=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "-o" ]; then out="$arg"; fi
+      prev="$arg"
+    done
+    mkdir -p "$out"
+    printf 'main:\n  nop\n' > "$out/main.asm"
+    ;;
+  *) echo '{}' ;;
+esac
+"""
+
+
+def test_kuna_operations_fake(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, elf_file: Path
+) -> None:
+    script = _fake_script(tmp_path, "kuna", _KUNA_FAKE)
+    monkeypatch.setenv("REA_KUNA_COMMAND", str(script))
+    target = _target(elf_file)
+    provider = KunaProvider()
+    procedures = provider.analyze("list_procedures", target, {}, None)
+    assert procedures.ok and procedures.value.result["count"] == 2
+    search = provider.analyze("search_procedures", target, {"query": "help"}, None)
+    assert search.ok and search.value.result["count"] == 1
+    address = provider.analyze("procedure_address", target, {"function": "main"}, None)
+    assert address.ok and address.value.result["address"] == "0x1000"
+    named = provider.analyze("address_name", target, {"address": "0x1000"}, None)
+    assert named.ok and named.value.result["name"] == "main"
+    pseudocode = provider.analyze("procedure_pseudo_code", target, {"function": "main"}, None)
+    assert pseudocode.ok and "pseudocode" in pseudocode.value.result
+    callers = provider.analyze("procedure_callers", target, {"function": "main"}, None)
+    assert callers.ok and callers.value.result["xrefs"]
+    strings = provider.analyze("list_strings", target, {}, None)
+    assert strings.ok and strings.value.result["strings"]
+    string_search = provider.analyze("search_strings", target, {"query": "hell"}, None)
+    assert string_search.ok and string_search.value.result["count"] == 1
+    callees = provider.analyze("procedure_callees", target, {}, None)
+    assert callees.ok and callees.value.result["callees"]
+    xrefs = provider.analyze("xrefs", target, {"address": "0x1000"}, None)
+    assert xrefs.ok and xrefs.value.result["xrefs"]
+    documents = provider.analyze("list_documents", target, {}, None)
+    assert documents.ok and documents.value.result["documents"]
+    assembly = provider.analyze("procedure_assembly", target, {"function": "main"}, None)
+    assert assembly.ok
+    assert "nop" in assembly.value.result["assembly"]

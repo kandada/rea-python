@@ -294,9 +294,23 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         name="inspect_analysis_view", description="Summarize a saved Evidence record or bundle."
     )
     def inspect_analysis_view(
-        source: str, view: str = "summary", offset: int = 0, limit: int = 64
+        source: str,
+        view: str = "summary",
+        offset: int = 0,
+        limit: int = 64,
+        paths: list[str] | None = None,
+        property_keys: list[str] | None = None,
+        evidence_id: str | None = None,
     ) -> dict[str, Any]:
-        projected = load_view(source, view, offset=offset, limit=limit)
+        projected = load_view(
+            source,
+            view,
+            offset=offset,
+            limit=limit,
+            paths=paths,
+            property_keys=property_keys,
+            evidence_id=evidence_id,
+        )
         if not projected.ok:
             raise ToolError(_error_payload(projected.error))
         return projected.value
@@ -664,8 +678,24 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         )
 
     @server.tool(name="decode_android_resources", description="Decode APK resources with apktool.")
-    def decode_android_resources(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "decode_android_resources", path, {})
+    def decode_android_resources(
+        path: str | None = None,
+        include_strings: bool = True,
+        string_tables_only: bool = False,
+        locale: str | None = None,
+        locales: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "decode_android_resources",
+            path,
+            {
+                "include_strings": include_strings,
+                "string_tables_only": string_tables_only,
+                "locale": locale,
+                "locales": locales,
+            },
+        )
 
     @server.tool(name="decode_android_smali", description="Full apktool smali inventory.")
     def decode_android_smali(path: str | None = None) -> dict[str, Any]:
@@ -689,9 +719,19 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     def kuna_decompile(path: str | None = None, function: str = "main") -> dict[str, Any]:
         return _analysis(session, "kuna_decompile", path, {"function": function})
 
-    @server.tool(name="ghidra_analyze", description="Ghidra overview via pyhidra.")
-    def ghidra_analyze(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "ghidra_analyze", path, {})
+    @server.tool(name="ghidra_analyze", description="Ghidra overview via pyhidra/pyghidra.")
+    def ghidra_analyze(
+        path: str | None = None,
+        language: str | None = None,
+        compiler: str | None = None,
+        entry: str | None = None,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "ghidra_analyze",
+            path,
+            {"language": language, "compiler": compiler, "entry": entry},
+        )
 
     @server.tool(name="ghidra_function", description="Ghidra function inventory.")
     def ghidra_function(
@@ -1409,70 +1449,74 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="list_browser_targets", description="List browser CDP targets.")
     def list_browser_targets(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("list_browser_targets", "cdp", {"endpoint": "endpoint"})
+        return _runtime("list_browser_targets", "cdp", {"endpoint": endpoint})
 
     @server.tool(name="list_electron_targets", description="List Electron CDP targets.")
     def list_electron_targets(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("list_electron_targets", "cdp", {"endpoint": "endpoint"})
+        return _runtime("list_electron_targets", "cdp", {"endpoint": endpoint})
 
     @server.tool(
         name="list_javascript_runtime_targets", description="List JavaScript runtime targets."
     )
     def list_javascript_runtime_targets(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("list_javascript_runtime_targets", "cdp", {"endpoint": "endpoint"})
+        return _runtime("list_javascript_runtime_targets", "cdp", {"endpoint": endpoint})
 
     @server.tool(
         name="inspect_web_page", description="Inspect a page's title, scripts, forms and meta."
     )
     def inspect_web_page(url: str) -> dict[str, Any]:
-        return _runtime("inspect_web_page", "url", {"url": "url"})
+        return _runtime("inspect_web_page", url, {"url": url})
 
     @server.tool(
         name="inspect_web_event_listeners",
         description="Inspect inline handlers and addEventListener use.",
     )
     def inspect_web_event_listeners(url: str) -> dict[str, Any]:
-        return _runtime("inspect_web_event_listeners", "url", {"url": "url"})
+        return _runtime("inspect_web_event_listeners", url, {"url": url})
 
     @server.tool(name="observe_web_execution", description="Observe console output and requests.")
-    def observe_web_execution(url: str, duration: float = 3.0) -> dict[str, Any]:
-        return _runtime("observe_web_execution", "url", {"url": "url", "duration": "duration"})
+    def observe_web_execution(
+        url: str, duration: float = 3.0, capture_bodies: bool = False
+    ) -> dict[str, Any]:
+        return _runtime(
+            "observe_web_execution",
+            url,
+            {"url": url, "duration": duration, "capture_bodies": capture_bodies},
+        )
 
     @server.tool(name="observe_web_session", description="Observe cookies and web storage.")
     def observe_web_session(url: str) -> dict[str, Any]:
-        return _runtime("observe_web_session", "url", {"url": "url"})
+        return _runtime("observe_web_session", url, {"url": url})
 
     @server.tool(name="capture_web_screenshot", description="Capture a page screenshot.")
     def capture_web_screenshot(url: str, output: str, full_page: bool = False) -> dict[str, Any]:
         return _runtime(
             "capture_web_screenshot",
             "url",
-            {"url": "url", "output": "output", "full_page": "full_page"},
+            {"url": url, "output": output, "full_page": full_page},
         )
 
     @server.tool(name="compare_web_screenshots", description="Compare two screenshots.")
     def compare_web_screenshots(left: str, right: str) -> dict[str, Any]:
-        return _runtime("compare_web_screenshots", "web", {"left": "left", "right": "right"})
+        return _runtime("compare_web_screenshots", "web", {"left": left, "right": right})
 
     @server.tool(name="capture_browser_scenario", description="Run a browser scenario.")
     def capture_browser_scenario(steps: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        return _runtime("capture_browser_scenario", "web", {"steps": "steps"})
+        return _runtime("capture_browser_scenario", "web", {"steps": steps})
 
     @server.tool(name="capture_electron_scenario", description="Run an Electron/CDP scenario.")
     def capture_electron_scenario(
         endpoint: str | None = None, steps: list[dict[str, Any]] | None = None
     ) -> dict[str, Any]:
-        return _runtime(
-            "capture_electron_scenario", "cdp", {"endpoint": "endpoint", "steps": "steps"}
-        )
+        return _runtime("capture_electron_scenario", "cdp", {"endpoint": endpoint, "steps": steps})
 
     @server.tool(name="inspect_electron_page", description="Inspect an Electron page target.")
     def inspect_electron_page(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("inspect_electron_page", "cdp", {"endpoint": "endpoint"})
+        return _runtime("inspect_electron_page", "cdp", {"endpoint": endpoint})
 
     @server.tool(name="observe_javascript_runtime", description="List runtime targets.")
     def observe_javascript_runtime(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("observe_javascript_runtime", "cdp", {"endpoint": "endpoint"})
+        return _runtime("observe_javascript_runtime", "cdp", {"endpoint": endpoint})
 
     @server.tool(name="reconcile_javascript_runtime", description="Reconcile runtime target sets.")
     def reconcile_javascript_runtime(
@@ -1481,42 +1525,42 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _runtime(
             "reconcile_javascript_runtime",
             "cdp",
-            {"endpoint": "endpoint", "left": "left", "right": "right"},
+            {"endpoint": endpoint, "left": left, "right": right},
         )
 
     @server.tool(name="analyze_web_bundle", description="Analyze a local JavaScript bundle.")
     def analyze_web_bundle(path: str) -> dict[str, Any]:
-        return _runtime("analyze_web_bundle", "path", {"path": "path"})
+        return _runtime("analyze_web_bundle", path, {"path": path})
 
     @server.tool(name="export_web_scripts", description="Export page scripts to files.")
     def export_web_scripts(url: str, output: str) -> dict[str, Any]:
-        return _runtime("export_web_scripts", "url", {"url": "url", "output": "output"})
+        return _runtime("export_web_scripts", url, {"url": url, "output": output})
 
     @server.tool(name="recover_javascript_sources", description="Recover sources from source maps.")
     def recover_javascript_sources(url: str, output: str) -> dict[str, Any]:
-        return _runtime("recover_javascript_sources", "url", {"url": "url", "output": "output"})
+        return _runtime("recover_javascript_sources", url, {"url": url, "output": output})
 
     @server.tool(
         name="trace_web_module_imports", description="Trace module imports across scripts."
     )
     def trace_web_module_imports(url: str) -> dict[str, Any]:
-        return _runtime("trace_web_module_imports", "url", {"url": "url"})
+        return _runtime("trace_web_module_imports", url, {"url": url})
 
     @server.tool(name="trace_web_source_location", description="Find a symbol in a source file.")
     def trace_web_source_location(source_url: str, symbol: str) -> dict[str, Any]:
         return _runtime(
-            "trace_web_source_location", "web", {"source_url": "source_url", "symbol": "symbol"}
+            "trace_web_source_location", source_url, {"source_url": source_url, "symbol": symbol}
         )
 
     @server.tool(name="discover_webmcp_tools", description="Discover WebMCP declarations.")
     def discover_webmcp_tools(url: str) -> dict[str, Any]:
-        return _runtime("discover_webmcp_tools", "url", {"url": "url"})
+        return _runtime("discover_webmcp_tools", url, {"url": url})
 
     @server.tool(name="trace_native_ui_action", description="Trace a native UI action.")
     def trace_native_ui_action(
         selector: str | None = None, value: str | None = None
     ) -> dict[str, Any]:
-        return _runtime("trace_native_ui_action", "web", {"selector": "selector", "value": "value"})
+        return _runtime("trace_native_ui_action", "web", {"selector": selector, "value": value})
 
     @server.tool(name="binary_overview", description="Alias for overview analysis.")
     def binary_overview(path: str | None = None) -> dict[str, Any]:

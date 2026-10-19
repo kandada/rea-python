@@ -194,3 +194,68 @@ async def test_compat_alias_tools_registered() -> None:
         "import_evidence_bundle",
         "inspect_web_network_capture",
     } <= names
+
+
+def test_setup_merges_existing_client_config(tmp_path: Path) -> None:
+    from rea_mcp.application.setup import write_registration
+
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps({"theme": "dark", "mcpServers": {"other": {"command": "x"}}}),
+        encoding="utf-8",
+    )
+    written = write_registration(str(config))
+    assert written.ok
+    data = json.loads(config.read_text(encoding="utf-8"))
+    assert data["theme"] == "dark"
+    assert data["mcpServers"]["other"]["command"] == "x"
+    assert data["mcpServers"]["rea-mcp"]["args"] == ["-m", "rea_mcp", "mcp"]
+
+
+def test_setup_merges_jsonc_config(tmp_path: Path) -> None:
+    from rea_mcp.application.setup import _strip_jsonc, write_registration
+
+    config = tmp_path / "config.jsonc"
+    config.write_text(
+        """
+        {
+          // existing client servers
+          "mcpServers": {
+            "other": {"command": "x"},
+          },
+          "theme": "dark",
+        }
+        """,
+        encoding="utf-8",
+    )
+    written = write_registration(str(config))
+    assert written.ok
+    data = json.loads(_strip_jsonc(config.read_text(encoding="utf-8")))
+    assert data["theme"] == "dark"
+    assert data["mcpServers"]["other"]["command"] == "x"
+    assert "rea-mcp" in data["mcpServers"]
+    assert (tmp_path / "config.jsonc.bak").is_file()
+
+
+def test_setup_edits_last_duplicate_member(tmp_path: Path) -> None:
+    from rea_mcp.application.setup import _strip_jsonc, write_registration
+
+    config = tmp_path / "config.jsonc"
+    config.write_text(
+        """
+        {
+          // first member is shadowed by the second
+          "mcpServers": {"first": {"command": "a"}},
+          "mcpServers": {"second": {"command": "b"}},
+        }
+        """,
+        encoding="utf-8",
+    )
+    written = write_registration(str(config))
+    assert written.ok
+    assert written.value["edited_last_duplicate"] is True
+    text = config.read_text(encoding="utf-8")
+    assert '"first"' in text  # earlier duplicate preserved
+    data = json.loads(_strip_jsonc(text))
+    assert data["mcpServers"]["second"]["command"] == "b"
+    assert "rea-mcp" in data["mcpServers"]

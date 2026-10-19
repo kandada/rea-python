@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,6 +50,8 @@ def run_owned_process(
 ) -> Result[ProcessResult, AnalysisError]:
     """Run a child in its own session and return a bounded observation."""
 
+    if cancel_event is not None and cancel_event.is_set():
+        return err(AnalysisCancelledError(operation=operation))
     try:
         process = subprocess.Popen(
             list(argv),
@@ -102,14 +105,22 @@ def run_owned_process(
 
     timed_out = False
     cancelled = False
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _terminate_group(process)
-    if cancel_event is not None and cancel_event.is_set() and process.poll() is None:
-        cancelled = True
-        _terminate_group(process)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            _terminate_group(process)
+            break
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            timed_out = True
+            _terminate_group(process)
+            break
+        try:
+            process.wait(timeout=0.1 if remaining is None else min(0.1, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
 
     stdout_thread.join(timeout=5)
     stderr_thread.join(timeout=5)
@@ -126,7 +137,17 @@ def run_owned_process(
     if timed_out:
         result.limitations.append(f"Process exceeded its {timeout}s deadline and was terminated.")
     if cancelled:
-        return err(AnalysisCancelledError(operation=operation))
+        return err(
+            AnalysisCancelledError(
+                operation=operation,
+                details={
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "timed_out": timed_out,
+                    "partial": True,
+                },
+            )
+        )
     return ok(result)
 
 

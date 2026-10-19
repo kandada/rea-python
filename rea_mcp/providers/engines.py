@@ -7,12 +7,14 @@ runs a bounded, owned subprocess only when the caller supplies the tool.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -80,6 +82,163 @@ class _CliEngine(AnalysisProvider):
             operation=operation,
             reason="provider_unavailable",
         )
+
+
+_JADX_DEFAULT_TIMEOUT_MS = 120_000
+_STRING_TABLE_LIMIT = 2000
+_LOCALE_QUALIFIER_RE = re.compile(r"^[a-z]{2,3}(?:-(?:r[A-Z]{2}|[0-9]{3}|[A-Za-z0-9+]+))?$")
+_NON_LOCALE_QUALIFIERS = {
+    "land",
+    "port",
+    "square",
+    "wide",
+    "tall",
+    "sw600dp",
+    "sw720dp",
+    "w600dp",
+    "h720dp",
+    "night",
+    "notnight",
+    "ldrtl",
+    "ldltr",
+    "small",
+    "normal",
+    "large",
+    "xlarge",
+    "car",
+    "desk",
+    "television",
+    "watch",
+    "vrheadset",
+    "anydpi",
+    "nodpi",
+    "ldpi",
+    "mdpi",
+    "hdpi",
+    "xhdpi",
+    "xxhdpi",
+    "xxxhdpi",
+    "tvdpi",
+}
+
+
+def _jadx_operation_timeout() -> float:
+    raw = os.environ.get("REA_JADX_OPERATION_TIMEOUT_MS")
+    if raw:
+        try:
+            value = int(raw)
+            if 1 <= value <= 2_147_483_647:
+                return value / 1000.0
+        except ValueError:
+            pass
+    return _JADX_DEFAULT_TIMEOUT_MS / 1000.0
+
+
+def _locale_directory_suffix(locale: str) -> str:
+    normalized = locale.strip()
+    match = re.fullmatch(r"([a-z]{2,3})-([A-Z]{2})", normalized)
+    if match:
+        return f"{match.group(1)}-r{match.group(2)}"
+    match = re.fullmatch(r"([a-z]{2,3})-([0-9]{3})", normalized)
+    if match:
+        return f"b+{match.group(1)}+{match.group(2)}"
+    return normalized
+
+
+def _discover_string_locales(root: Path) -> list[str]:
+    res = root / "res"
+    if not res.is_dir():
+        return []
+    locales = []
+    for entry in res.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("values-"):
+            continue
+        suffix = entry.name[len("values-") :]
+        if not (entry / "strings.xml").is_file():
+            continue
+        if suffix in _NON_LOCALE_QUALIFIERS:
+            continue
+        if _LOCALE_QUALIFIER_RE.fullmatch(suffix):
+            locales.append(suffix)
+    return sorted(set(locales))
+
+
+def _read_string_table(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {
+            "status": "missing",
+            "strings": [],
+            "total_count": None,
+            "unparsed_count": None,
+        }
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return {"status": "malformed", "strings": [], "total_count": None, "unparsed_count": None}
+    if len(raw) > 4_000_000:
+        return {"status": "oversized", "strings": [], "total_count": None, "unparsed_count": None}
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return {"status": "malformed", "strings": [], "total_count": None, "unparsed_count": None}
+    entries: list[dict[str, str]] = []
+    unparsed = 0
+    for child in root:
+        name = child.attrib.get("name")
+        if not name:
+            unparsed += 1
+            continue
+        value = "".join(child.itertext()).strip()
+        entries.append({"name": name, "value": value})
+    total = len(entries)
+    return {
+        "status": "present",
+        "strings": entries[:_STRING_TABLE_LIMIT],
+        "total_count": total,
+        "unparsed_count": unparsed,
+        "truncated": total > _STRING_TABLE_LIMIT,
+    }
+
+
+def _android_resource_projection(
+    root: Path, files: list[str], parameters: dict[str, Any]
+) -> dict[str, Any]:
+    include_strings = bool(parameters.get("include_strings", True))
+    string_tables_only = bool(parameters.get("string_tables_only", False))
+    selected_locale = parameters.get("locale")
+    requested = parameters.get("locales") or []
+    suffixes = sorted({_locale_directory_suffix(str(item)) for item in requested})
+    primary_suffix = _locale_directory_suffix(str(selected_locale)) if selected_locale else None
+    primary_path = (
+        root / "res" / f"values-{primary_suffix}" / "strings.xml"
+        if primary_suffix
+        else root / "res" / "values" / "strings.xml"
+    )
+    primary = _read_string_table(primary_path)
+    result: dict[str, Any] = {
+        "decoded_files": files[:1000],
+        "decoded_file_count": len(files),
+        "file_count": len(files),
+        "truncated": len(files) > 1000,
+        "strings": [] if (not include_strings or string_tables_only) else primary["strings"],
+        "locale": primary_suffix,
+        "locales": _discover_string_locales(root),
+        "coverage": "complete" if primary["status"] in ("present", "missing") else "partial",
+    }
+    if requested or string_tables_only:
+        default = _read_string_table(root / "res" / "values" / "strings.xml")
+        tables = [{"locale": None, **default}]
+        for suffix in suffixes:
+            tables.append(
+                {
+                    "locale": suffix,
+                    **_read_string_table(root / "res" / f"values-{suffix}" / "strings.xml"),
+                }
+            )
+        result["string_tables"] = tables
+        if any(table["status"] not in ("present", "missing") for table in tables):
+            result["coverage"] = "partial"
+    return result
 
 
 class ApktoolProvider(_CliEngine):
@@ -162,14 +321,11 @@ class ApktoolProvider(_CliEngine):
                         limitations=("Decoded output follows the caller's apktool version.",),
                     )
                 )
+            projection = _android_resource_projection(Path(output_dir), files, parameters)
+            projection["stderr_tail"] = result.value.stderr[-2000:]
             return ok(
                 AnalysisExecution(
-                    result={
-                        "decoded_files": files[:1000],
-                        "file_count": len(files),
-                        "truncated": len(files) > 1000,
-                        "stderr_tail": result.value.stderr[-2000:],
-                    },
+                    result=projection,
                     provider=self.identity(),
                     limitations=("Decoded output follows the caller's apktool version.",),
                 )
@@ -1185,7 +1341,10 @@ class JadxProvider(_CliEngine):
         try:
             argv = [*shlex.split(command), "--no-res", "-d", output_dir, target.path]
             result = run_owned_process(
-                argv, timeout=600, operation=operation, max_output_bytes=512 * 1024
+                argv,
+                timeout=_jadx_operation_timeout(),
+                operation=operation,
+                max_output_bytes=512 * 1024,
             )
             if not result.ok:
                 return err(result.error)
@@ -1319,14 +1478,101 @@ class SignalProvider(_CliEngine):
         )
 
 
+_KUNA_OPERATIONS = (
+    "kuna_decompile",
+    "list_documents",
+    "list_procedures",
+    "search_procedures",
+    "list_strings",
+    "search_strings",
+    "procedure_address",
+    "address_name",
+    "procedure_pseudo_code",
+    "procedure_assembly",
+    "analyze_function",
+    "procedure_callers",
+    "procedure_callees",
+    "xrefs",
+)
+_KUNA_UNSUPPORTED: dict[str, str] = {}
+_KUNA_CACHE: dict[str, tuple[int, int, Any]] = {}
+_KUNA_CACHE_LIMIT = 32
+
+
+def _kuna_timeout() -> float:
+    configured = os.environ.get("REA_KUNA_TIMEOUT_MS")
+    if configured:
+        with contextlib.suppress(ValueError):
+            return max(1.0, min(float(configured) / 1000.0, 3600.0))
+    return 600.0
+
+
+def _kuna_json(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _kuna_records(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("functions", "procedures", "items", "strings", "results", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _kuna_address(record: dict[str, Any]) -> str | None:
+    for key in ("address", "addr", "ea", "start", "entry", "offset"):
+        value = record.get(key)
+        if isinstance(value, (str, int)):
+            return str(value)
+    return None
+
+
+def _kuna_name(record: dict[str, Any]) -> str | None:
+    for key in ("name", "procedure", "symbol", "function"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _same_address(left: str, right: str) -> bool:
+    def normalize(value: str) -> Any:
+        try:
+            return int(value, 0)
+        except (TypeError, ValueError):
+            return value
+
+    return bool(normalize(left) == normalize(right))
+
+
 class KunaProvider(_CliEngine):
     provider_id = "kuna"
-    provider_name = "REA-Python Kuna decompiler"
+    provider_name = "REA-Python Kuna static analysis"
     tool_names = ()
     env_var = "REA_KUNA_COMMAND"
 
     def capabilities(self) -> tuple[CapabilityDescriptor, ...]:
-        return (self._capability("kuna_decompile"),)
+        descriptors = []
+        for operation in _KUNA_OPERATIONS:
+            if operation in _KUNA_UNSUPPORTED:
+                descriptors.append(
+                    CapabilityDescriptor(
+                        operation=operation,
+                        provider=self.identity(),
+                        available=False,
+                        reason=_KUNA_UNSUPPORTED[operation],
+                        effects=self.effects,
+                    )
+                )
+            else:
+                descriptors.append(self._capability(operation))
+        return tuple(descriptors)
 
     def supports(self, target: BinaryTarget) -> TargetSupport:
         if target.format in ("elf", "pe", "mach-o", "mach-o-universal"):
@@ -1337,7 +1583,7 @@ class KunaProvider(_CliEngine):
 
     def analyze(self, operation, target, parameters, profile):  # type: ignore[no-untyped-def]
         del profile
-        if operation != "kuna_decompile":
+        if operation not in _KUNA_OPERATIONS:
             return err(
                 AnalysisInputError(
                     operation=operation, message=f"unsupported operation {operation}"
@@ -1348,31 +1594,326 @@ class KunaProvider(_CliEngine):
             return err(self._unavailable(operation))
         command = self._resolution().path
         assert command is not None
-        function = str(parameters.get("function") or "")
-        argv = [*shlex.split(command), "decompile", target.path]
-        if function:
-            argv.append(function)
-            if function.startswith(("0x", "0X")) or function.isdigit():
-                argv.append("--addr")
-        timeout = 600.0
-        configured = os.environ.get("REA_KUNA_TIMEOUT_MS")
-        if configured:
-            with contextlib.suppress(ValueError):
-                timeout = max(1.0, min(float(configured) / 1000.0, 3600.0))
-        result = run_owned_process(
-            argv, timeout=timeout, operation=operation, max_output_bytes=512 * 1024
-        )
+        if operation == "list_documents":
+            return ok(
+                AnalysisExecution(result={"documents": [target.path]}, provider=self.identity())
+            )
+        if operation == "procedure_assembly":
+            return self._assembly(command, target.path, parameters, operation)
+        if operation in (
+            "list_procedures",
+            "search_procedures",
+            "procedure_address",
+            "address_name",
+        ):
+            inventory = self._inventory(command, target.path, operation)
+            if not inventory.ok:
+                return inventory
+            records = _kuna_records(inventory.value)
+            if operation == "list_procedures":
+                return ok(
+                    AnalysisExecution(
+                        result={"procedures": inventory.value, "count": len(records)},
+                        provider=self.identity(),
+                        limitations=("Entries come from Kuna's own discovery.",),
+                    )
+                )
+            if operation == "search_procedures":
+                query = str(parameters.get("query") or "").lower()
+                matches = [
+                    record for record in records if query in (_kuna_name(record) or "").lower()
+                ]
+                return ok(
+                    AnalysisExecution(
+                        result={"query": query, "matches": matches[:500], "count": len(matches)},
+                        provider=self.identity(),
+                    )
+                )
+            if operation == "procedure_address":
+                wanted = str(parameters.get("function") or parameters.get("procedure") or "")
+                for record in records:
+                    if _kuna_name(record) == wanted:
+                        return ok(
+                            AnalysisExecution(
+                                result={"name": wanted, "address": _kuna_address(record)},
+                                provider=self.identity(),
+                            )
+                        )
+                return ok(
+                    AnalysisExecution(
+                        result={"name": wanted, "address": None}, provider=self.identity()
+                    )
+                )
+            wanted_address = str(parameters.get("address") or "")
+            for record in records:
+                record_address = _kuna_address(record)
+                if record_address and _same_address(record_address, wanted_address):
+                    return ok(
+                        AnalysisExecution(
+                            result={"address": wanted_address, "name": _kuna_name(record)},
+                            provider=self.identity(),
+                        )
+                    )
+            return ok(
+                AnalysisExecution(
+                    result={"address": wanted_address, "name": None}, provider=self.identity()
+                )
+            )
+        if operation in ("list_strings", "search_strings"):
+            argv = [
+                *shlex.split(command),
+                "strings",
+                target.path,
+                "--json",
+                "--encoding",
+                "all",
+                "--min-length",
+                "5",
+                "--termination",
+                "any",
+                "--no-xrefs",
+            ]
+            cached = self._cached(command, target.path, "strings", argv, operation)
+            if not cached.ok:
+                return cached
+            parsed = cached.value
+            payload = parsed
+            if operation == "search_strings":
+                query = str(parameters.get("query") or "").lower()
+                matches = [
+                    record
+                    for record in _kuna_records(parsed)
+                    if query
+                    in str(
+                        record.get("value") or record.get("string") or record.get("text") or ""
+                    ).lower()
+                ]
+                return ok(
+                    AnalysisExecution(
+                        result={"query": query, "matches": matches[:500], "count": len(matches)},
+                        provider=self.identity(),
+                        limitations=("String scanning skips references.",),
+                    )
+                )
+            return ok(AnalysisExecution(result={"strings": payload}, provider=self.identity()))
+        if operation in ("xrefs", "procedure_callers"):
+            address = self._resolve_address(command, target.path, parameters, operation)
+            if not address.ok:
+                return address
+            argv = [
+                *shlex.split(command),
+                "xrefs",
+                target.path,
+                "--to",
+                address.value,
+                "--json",
+            ]
+            result = self._run(argv, operation)
+            if not result.ok:
+                return result
+            parsed = _kuna_json(result.value.stdout)
+            return ok(
+                AnalysisExecution(
+                    result={
+                        "address": address.value,
+                        "xrefs": parsed
+                        if parsed is not None
+                        else {"raw": result.value.stdout[:200_000]},
+                    },
+                    provider=self.identity(),
+                    limitations=("Exact-address incoming references only.",),
+                )
+            )
+        if operation == "procedure_callees":
+            argv = [
+                *shlex.split(command),
+                "decompile-graph",
+                target.path,
+                "--functions",
+                "",
+            ]
+            result = self._run(argv, operation)
+            if not result.ok:
+                return result
+            parsed = _kuna_json(result.value.stdout)
+            return ok(
+                AnalysisExecution(
+                    result={
+                        "callees": parsed
+                        if parsed is not None
+                        else {"raw": result.value.stdout[:200_000]}
+                    },
+                    provider=self.identity(),
+                    limitations=("Raw decompile-graph output; call-kind edges only.",),
+                )
+            )
+        # pseudocode / analyze_function / kuna_decompile
+        address = self._resolve_address(command, target.path, parameters, operation)
+        if not address.ok:
+            return address
+        argv = [
+            *shlex.split(command),
+            "decompile",
+            target.path,
+            address.value,
+            "--addr",
+        ]
+        result = self._run(argv, operation)
         if not result.ok:
-            return err(result.error)
+            return result
+        pseudocode = result.value.stdout.rstrip("\n")
+        data: dict[str, Any] = {
+            "function": parameters.get("function") or address.value,
+            "address": address.value,
+            "pseudocode": pseudocode,
+        }
+        if operation == "analyze_function":
+            data["procedure"] = {
+                "name": parameters.get("function"),
+                "address": address.value,
+            }
         return ok(
             AnalysisExecution(
-                result={
-                    "function": function or None,
-                    "pseudocode": result.value.stdout.rstrip("\n"),
-                },
+                result=data,
                 provider=self.identity(),
-                limitations=("Output follows the caller's Kuna build.",),
+                limitations=("Pseudocode is Kuna text, not original source.",),
             )
+        )
+
+    def _run(self, argv: list[str], operation: str) -> Result[Any, AnalysisError]:
+        return run_owned_process(
+            argv, timeout=_kuna_timeout(), operation=operation, max_output_bytes=512 * 1024
+        )
+
+    def _cached(
+        self,
+        command: str,
+        target_path: str,
+        cache_operation: str,
+        argv: list[str],
+        operation: str,
+    ) -> Result[Any, AnalysisError]:
+        try:
+            stat = os.stat(target_path)
+        except OSError:
+            stat = None
+        key = (
+            f"{target_path}|{stat.st_mtime_ns}|{stat.st_size}|{cache_operation}"
+            if stat is not None
+            else f"{target_path}|{cache_operation}"
+        )
+        cached = _KUNA_CACHE.get(key)
+        if cached is not None:
+            return ok(cached[2])
+        result = self._run(argv, operation)
+        if not result.ok:
+            return result
+        parsed = _kuna_json(result.value.stdout)
+        if parsed is None:
+            return err(
+                AnalysisInputError(
+                    operation=operation, message=f"Kuna {cache_operation} is not valid JSON"
+                )
+            )
+        if len(_KUNA_CACHE) >= _KUNA_CACHE_LIMIT:
+            _KUNA_CACHE.pop(next(iter(_KUNA_CACHE)))
+        if stat is not None:
+            _KUNA_CACHE[key] = (stat.st_mtime_ns, stat.st_size, parsed)
+        return ok(parsed)
+
+    def _inventory(
+        self, command: str, target_path: str, operation: str
+    ) -> Result[Any, AnalysisError]:
+        return self._cached(
+            command,
+            target_path,
+            "functions",
+            [*shlex.split(command), "functions", target_path, "--json"],
+            operation,
+        )
+
+    def _assembly(
+        self,
+        command: str,
+        target_path: str,
+        parameters: dict[str, Any],
+        operation: str,
+    ) -> Result[AnalysisExecution, AnalysisError]:
+        function = str(parameters.get("function") or parameters.get("procedure") or "")
+        output = tempfile.mkdtemp(prefix="rea_mcp-kuna-")
+        try:
+            result = self._run(
+                [
+                    *shlex.split(command),
+                    "decompile-project",
+                    target_path,
+                    "-o",
+                    output,
+                    "--jobs",
+                    "1",
+                ],
+                operation,
+            )
+            if not result.ok:
+                return result
+            candidates: list[tuple[Path, str]] = []
+            for file in Path(output).rglob("*"):
+                if not file.is_file() or file.suffix.lower() not in (
+                    ".asm",
+                    ".s",
+                    ".txt",
+                    ".json",
+                ):
+                    continue
+                try:
+                    text = file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if not function or function in text:
+                    candidates.append((file, text))
+            if not candidates:
+                return err(
+                    AnalysisInputError(
+                        operation=operation,
+                        message="Kuna project export did not contain the procedure assembly",
+                    )
+                )
+            file, text = candidates[0]
+            return ok(
+                AnalysisExecution(
+                    result={
+                        "function": function or None,
+                        "assembly": text[:200_000],
+                        "source": file.name,
+                    },
+                    provider=self.identity(),
+                    limitations=("Assembly is exact Kuna project-export text.",),
+                )
+            )
+        finally:
+            shutil.rmtree(output, ignore_errors=True)
+
+    def _resolve_address(
+        self,
+        command: str,
+        target_path: str,
+        parameters: dict[str, Any],
+        operation: str,
+    ) -> Result[str, AnalysisError]:
+        candidate = parameters.get("address") or parameters.get("function") or "main"
+        value = str(candidate)
+        if value.startswith(("0x", "0X")) or value.isdigit():
+            return ok(value)
+        inventory = self._inventory(command, target_path, operation)
+        if not inventory.ok:
+            return inventory
+        for record in _kuna_records(inventory.value):
+            if _kuna_name(record) == value:
+                address = _kuna_address(record)
+                if address:
+                    return ok(address)
+        return err(
+            AnalysisInputError(operation=operation, message=f"Kuna procedure not found: {value}")
         )
 
 

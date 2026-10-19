@@ -17,7 +17,7 @@ from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
 from ..process.supervision import run_owned_process
 from .base import AnalysisExecution, CapabilityDescriptor, CapabilityEffects
-from .engines import _CliEngine
+from .engines import _CliEngine, _jadx_operation_timeout
 from .registry import TargetSupport
 
 _PROVIDER = ProviderIdentity(id="android-deep", name="REA-Python Android deep", version="1")
@@ -81,7 +81,7 @@ class AndroidDeepProvider(_CliEngine):
         root = Path(tempfile.mkdtemp(prefix="rea-jadx-deep-"))
         result = run_owned_process(
             [*shlex.split(command), "--no-res", "-d", str(root), apk],
-            timeout=900,
+            timeout=_jadx_operation_timeout(),
             operation=operation,
             max_output_bytes=512 * 1024,
         )

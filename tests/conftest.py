@@ -462,6 +462,27 @@ def build_resource_blob() -> bytes:
     return bytes(blob)
 
 
+def build_asar_with_integrity(content: bytes = b"module.exports = 1;\n") -> bytes:
+    header: dict[str, object] = {
+        "files": {
+            "main.js": {
+                "size": len(content),
+                "offset": "0",
+                "integrity": {
+                    "algorithm": "SHA256",
+                    "hash": "ab" * 32,
+                    "blockSize": 4096,
+                    "blocks": ["cd" * 32],
+                },
+            }
+        }
+    }
+    json_bytes = json.dumps(header).encode()
+    padded = json_bytes + b"\x00" * ((4 - len(json_bytes) % 4) % 4)
+    header_payload = struct.pack("<I", len(json_bytes)) + padded
+    return struct.pack("<II", 4, len(header_payload)) + header_payload + content
+
+
 def build_asar(files: dict[str, bytes]) -> bytes:
     header: dict[str, object] = {"files": {}}
     data = bytearray()
@@ -825,4 +846,11 @@ def har_file_b(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    return path
+
+
+@pytest.fixture
+def asar_integrity_file(tmp_path: Path) -> Path:
+    path = tmp_path / "app.asar"
+    path.write_bytes(build_asar_with_integrity())
     return path

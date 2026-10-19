@@ -375,9 +375,11 @@ class WebRuntimeProvider(AnalysisProvider):
                 AnalysisInputError(operation="observe_web_execution", message="url is required")
             )
         duration = min(float(parameters.get("duration") or 3.0), 300.0)
+        capture_bodies = bool(parameters.get("capture_bodies"))
         playwright, browser, page = self._new_page()
         console: list[Any] = []
         requests: list[Any] = []
+        pending: list[tuple[dict[str, Any], Any]] = []
         page.on(
             "console", lambda message: console.append({"type": message.type, "text": message.text})
         )
@@ -385,9 +387,40 @@ class WebRuntimeProvider(AnalysisProvider):
             "request",
             lambda request: requests.append({"method": request.method, "url": request.url}),
         )
+
+        def on_response(response: Any) -> None:
+            try:
+                request = response.request
+                if request.resource_type not in ("xhr", "fetch") or len(pending) >= 200:
+                    return
+                pending.append(
+                    (
+                        {
+                            "url": response.url,
+                            "status": response.status,
+                            "resource_type": request.resource_type,
+                        },
+                        response,
+                    )
+                )
+            except Exception:
+                return
+
+        page.on("response", on_response)
+        responses: list[dict[str, Any]] = []
         try:
             page.goto(str(url), wait_until="domcontentloaded")
-            time.sleep(duration)
+            page.wait_for_timeout(int(duration * 1000))
+            page.wait_for_timeout(100)
+            for entry, response in pending[:100]:
+                if capture_bodies:
+                    try:
+                        text = response.text()
+                        entry["body_truncated"] = len(text) > 200_000
+                        entry["body"] = text[:200_000]
+                    except Exception as cause:
+                        entry["body_error"] = str(cause)
+                responses.append(entry)
         finally:
             browser.close()
             playwright.stop()
@@ -397,8 +430,11 @@ class WebRuntimeProvider(AnalysisProvider):
                     "url": url,
                     "console": console[:1000],
                     "requests": requests[:1000],
+                    "responses": responses,
                     "console_count": len(console),
                     "request_count": len(requests),
+                    "response_count": len(responses),
+                    "bodies_captured": capture_bodies,
                 },
                 provider=self.identity(),
             )

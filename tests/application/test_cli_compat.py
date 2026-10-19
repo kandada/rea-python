@@ -388,3 +388,40 @@ def test_universal_address_mapping() -> None:
     assert mapped["file_offset"] is not None
     read = cli_compat.read_bytes(str(binary), length=4, address=hex(text["vmaddr"]))
     assert read["address"] == text["vmaddr"]
+
+
+def test_extract_dmg(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    import pytest as _pytest
+
+    if not shutil.which("hdiutil"):
+        _pytest.skip("hdiutil is unavailable")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "hello.txt").write_text("hello dmg", encoding="utf-8")
+    dmg = tmp_path / "sample.dmg"
+    created = subprocess.run(
+        [
+            "hdiutil",
+            "create",
+            "-volname",
+            "rea-test",
+            "-srcfolder",
+            str(source),
+            "-ov",
+            "-format",
+            "UDZO",
+            str(dmg),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        _pytest.skip(f"hdiutil create failed: {created.stderr[-200:]}")
+    output = tmp_path / "out"
+    result = cli_compat.extract_artifact(str(dmg), str(output))
+    assert result["format"] == "dmg"
+    assert (output / "hello.txt").read_text(encoding="utf-8") == "hello dmg"

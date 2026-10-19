@@ -722,10 +722,25 @@ def capture_cdp_network(
 
 @app.command("decode-android-resources")
 def decode_android_resources(
-    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+    path: str = typer.Argument(...),
+    include_strings: bool = typer.Option(True, "--include-strings/--no-include-strings"),
+    string_tables_only: bool = typer.Option(False, "--string-tables-only"),
+    locale: str | None = typer.Option(None, "--locale"),
+    locales: list[str] = typer.Option([], "--locales"),
+    provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
-    """Decode APK resources with apktool."""
-    _run("decode_android_resources", path, provider, {})
+    """Decode APK resources with apktool, optionally projecting string tables."""
+    _run(
+        "decode_android_resources",
+        path,
+        provider,
+        {
+            "include_strings": include_strings,
+            "string_tables_only": string_tables_only,
+            "locale": locale,
+            "locales": list(locales) or None,
+        },
+    )
 
 
 @app.command("decode-android-smali")
@@ -776,10 +791,19 @@ def kuna_decompile(
 
 @app.command("ghidra-analyze")
 def ghidra_analyze(
-    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+    path: str = typer.Argument(...),
+    language: str | None = typer.Option(None, "--language"),
+    compiler: str | None = typer.Option(None, "--compiler"),
+    entry: str | None = typer.Option(None, "--entry"),
+    provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
-    """Ghidra overview via pyhidra."""
-    _run("ghidra_analyze", path, provider, {})
+    """Ghidra overview via pyhidra/pyghidra."""
+    _run(
+        "ghidra_analyze",
+        path,
+        provider,
+        {"language": language, "compiler": compiler, "entry": entry},
+    )
 
 
 @app.command("ghidra-function")
@@ -2097,7 +2121,7 @@ def list_browser_targets(
     endpoint: str | None = typer.Option(None, "--endpoint"),
 ) -> None:
     """List browser CDP targets."""
-    _run_runtime("list_browser_targets", "cdp", {"endpoint": "endpoint"})
+    _run_runtime("list_browser_targets", "cdp", {"endpoint": endpoint})
 
 
 @app.command("list-electron-targets")
@@ -2105,7 +2129,7 @@ def list_electron_targets(
     endpoint: str | None = typer.Option(None, "--endpoint"),
 ) -> None:
     """List Electron CDP targets."""
-    _run_runtime("list_electron_targets", "cdp", {"endpoint": "endpoint"})
+    _run_runtime("list_electron_targets", "cdp", {"endpoint": endpoint})
 
 
 @app.command("list-javascript-runtime-targets")
@@ -2113,7 +2137,7 @@ def list_javascript_runtime_targets(
     endpoint: str | None = typer.Option(None, "--endpoint"),
 ) -> None:
     """List JavaScript runtime targets."""
-    _run_runtime("list_javascript_runtime_targets", "cdp", {"endpoint": "endpoint"})
+    _run_runtime("list_javascript_runtime_targets", "cdp", {"endpoint": endpoint})
 
 
 @app.command("inspect-web-page")
@@ -2121,7 +2145,7 @@ def inspect_web_page(
     url: str = typer.Option(..., "--url"),
 ) -> None:
     """Inspect a page's title, scripts, forms and meta."""
-    _run_runtime("inspect_web_page", "url", {"url": "url"})
+    _run_runtime("inspect_web_page", url, {"url": url})
 
 
 @app.command("inspect-web-event-listeners")
@@ -2129,16 +2153,21 @@ def inspect_web_event_listeners(
     url: str = typer.Option(..., "--url"),
 ) -> None:
     """Inspect inline handlers and addEventListener use."""
-    _run_runtime("inspect_web_event_listeners", "url", {"url": "url"})
+    _run_runtime("inspect_web_event_listeners", url, {"url": url})
 
 
 @app.command("observe-web-execution")
 def observe_web_execution(
     url: str = typer.Option(..., "--url"),
     duration: float = typer.Option(3.0, "--duration"),
+    bodies: bool = typer.Option(False, "--bodies"),
 ) -> None:
-    """Observe console output and requests."""
-    _run_runtime("observe_web_execution", "url", {"url": "url", "duration": "duration"})
+    """Observe console output and requests; optionally capture XHR/fetch bodies."""
+    _run_runtime(
+        "observe_web_execution",
+        url,
+        {"url": url, "duration": duration, "capture_bodies": bodies},
+    )
 
 
 @app.command("observe-web-session")
@@ -2146,7 +2175,7 @@ def observe_web_session(
     url: str = typer.Option(..., "--url"),
 ) -> None:
     """Observe cookies and web storage."""
-    _run_runtime("observe_web_session", "url", {"url": "url"})
+    _run_runtime("observe_web_session", url, {"url": url})
 
 
 @app.command("capture-web-screenshot")
@@ -2159,7 +2188,7 @@ def capture_web_screenshot(
     _run_runtime(
         "capture_web_screenshot",
         "url",
-        {"url": "url", "output": "output", "full_page": "full_page"},
+        {"url": url, "output": output, "full_page": full_page},
     )
 
 
@@ -2169,7 +2198,7 @@ def compare_web_screenshots(
     right: str = typer.Option(..., "--right"),
 ) -> None:
     """Compare two screenshots."""
-    _run_runtime("compare_web_screenshots", "web", {"left": "left", "right": "right"})
+    _run_runtime("compare_web_screenshots", "web", {"left": left, "right": right})
 
 
 @app.command("capture-browser-scenario")
@@ -2200,7 +2229,7 @@ def inspect_electron_page(
     endpoint: str | None = typer.Option(None, "--endpoint"),
 ) -> None:
     """Inspect an Electron page target."""
-    _run_runtime("inspect_electron_page", "cdp", {"endpoint": "endpoint"})
+    _run_runtime("inspect_electron_page", "cdp", {"endpoint": endpoint})
 
 
 @app.command("observe-javascript-runtime")
@@ -2208,7 +2237,7 @@ def observe_javascript_runtime(
     endpoint: str | None = typer.Option(None, "--endpoint"),
 ) -> None:
     """List runtime targets."""
-    _run_runtime("observe_javascript_runtime", "cdp", {"endpoint": "endpoint"})
+    _run_runtime("observe_javascript_runtime", "cdp", {"endpoint": endpoint})
 
 
 @app.command("reconcile-javascript-runtime")
@@ -2221,7 +2250,7 @@ def reconcile_javascript_runtime(
     _run_runtime(
         "reconcile_javascript_runtime",
         "cdp",
-        {"endpoint": "endpoint", "left": "left", "right": "right"},
+        {"endpoint": endpoint, "left": left, "right": right},
     )
 
 
@@ -2230,7 +2259,7 @@ def analyze_web_bundle(
     path: str = typer.Argument(...),
 ) -> None:
     """Analyze a local JavaScript bundle."""
-    _run_runtime("analyze_web_bundle", "path", {"path": "path"})
+    _run_runtime("analyze_web_bundle", path, {"path": path})
 
 
 @app.command("export-web-scripts")
@@ -2239,7 +2268,7 @@ def export_web_scripts(
     output: str = typer.Option(..., "--output"),
 ) -> None:
     """Export page scripts to files."""
-    _run_runtime("export_web_scripts", "url", {"url": "url", "output": "output"})
+    _run_runtime("export_web_scripts", url, {"url": url, "output": output})
 
 
 @app.command("recover-javascript-sources")
@@ -2248,7 +2277,7 @@ def recover_javascript_sources(
     output: str = typer.Option(..., "--output"),
 ) -> None:
     """Recover sources from source maps."""
-    _run_runtime("recover_javascript_sources", "url", {"url": "url", "output": "output"})
+    _run_runtime("recover_javascript_sources", url, {"url": url, "output": output})
 
 
 @app.command("trace-web-module-imports")
@@ -2256,7 +2285,7 @@ def trace_web_module_imports(
     url: str = typer.Option(..., "--url"),
 ) -> None:
     """Trace module imports across scripts."""
-    _run_runtime("trace_web_module_imports", "url", {"url": "url"})
+    _run_runtime("trace_web_module_imports", url, {"url": url})
 
 
 @app.command("trace-web-source-location")
@@ -2266,7 +2295,7 @@ def trace_web_source_location(
 ) -> None:
     """Find a symbol in a source file."""
     _run_runtime(
-        "trace_web_source_location", "web", {"source_url": "source_url", "symbol": "symbol"}
+        "trace_web_source_location", source_url, {"source_url": source_url, "symbol": symbol}
     )
 
 
@@ -2275,7 +2304,7 @@ def discover_webmcp_tools(
     url: str = typer.Option(..., "--url"),
 ) -> None:
     """Discover WebMCP declarations."""
-    _run_runtime("discover_webmcp_tools", "url", {"url": "url"})
+    _run_runtime("discover_webmcp_tools", url, {"url": url})
 
 
 @app.command("trace-native-ui-action")
@@ -2284,7 +2313,7 @@ def trace_native_ui_action(
     value: str | None = typer.Option(None, "--value"),
 ) -> None:
     """Trace a native UI action."""
-    _run_runtime("trace_native_ui_action", "web", {"selector": "selector", "value": "value"})
+    _run_runtime("trace_native_ui_action", "web", {"selector": selector, "value": value})
 
 
 @app.command("binary-overview")
@@ -2429,9 +2458,20 @@ def inspect_evidence_bundle(
     view: str = typer.Option("summary", "--view"),
     offset: int = typer.Option(0, "--offset"),
     limit: int = typer.Option(64, "--limit"),
+    paths: list[str] = typer.Option([], "--path"),
+    property_keys: list[str] = typer.Option([], "--property-key"),
+    evidence_id: str | None = typer.Option(None, "--evidence-id"),
 ) -> None:
     """Project a saved Evidence bundle."""
-    projected = load_view(source, view, offset=offset, limit=limit)
+    projected = load_view(
+        source,
+        view,
+        offset=offset,
+        limit=limit,
+        paths=list(paths) or None,
+        property_keys=list(property_keys) or None,
+        evidence_id=evidence_id,
+    )
     if not projected.ok:
         fail(projected.error)
     emit_json(projected.value)
@@ -2729,12 +2769,27 @@ def capabilities() -> None:
 @app.command("inspect-analysis-view")
 def inspect_analysis_view(
     source: str = typer.Argument(..., help="Saved Evidence record or bundle JSON."),
-    view: str = typer.Option("summary", "--view", help="summary | record | page"),
+    view: str = typer.Option(
+        "summary",
+        "--view",
+        help="summary | record | page | environment-manifest | javascript-facts | javascript",
+    ),
     offset: int = typer.Option(0, "--offset"),
     limit: int = typer.Option(64, "--limit"),
+    paths: list[str] = typer.Option([], "--path"),
+    property_keys: list[str] = typer.Option([], "--property-key"),
+    evidence_id: str | None = typer.Option(None, "--evidence-id"),
 ) -> None:
-    """Project a saved Evidence record or bundle (summary, record, or page)."""
-    projected = load_view(source, view, offset=offset, limit=limit)
+    """Project a saved Evidence record or bundle."""
+    projected = load_view(
+        source,
+        view,
+        offset=offset,
+        limit=limit,
+        paths=list(paths) or None,
+        property_keys=list(property_keys) or None,
+        evidence_id=evidence_id,
+    )
     if not projected.ok:
         fail(projected.error)
     emit_json(projected.value)

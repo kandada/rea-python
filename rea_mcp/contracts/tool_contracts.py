@@ -73,9 +73,19 @@ class CommonKnowledgeInput(_Input):
 
 class AnalysisViewInput(_Input):
     source: str = Field(description="Path to a saved Evidence record or bundle JSON.")
-    view: Literal["summary", "record", "page"] = "summary"
+    view: Literal[
+        "summary",
+        "record",
+        "page",
+        "environment-manifest",
+        "javascript-facts",
+        "javascript",
+    ] = "summary"
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=64, ge=1, le=1000)
+    paths: list[str] | None = None
+    property_keys: list[str] | None = None
+    evidence_id: str | None = None
 
 
 class SetupInput(_Input):
@@ -307,6 +317,20 @@ class TraceValuesInput(_Input):
     query: str = Field(min_length=1)
 
 
+class GhidraAnalyzeInput(AnalysisInput):
+    language: str | None = Field(
+        default=None, description="Ghidra language id, e.g. 68000:BE:32:default."
+    )
+    compiler: str | None = Field(default=None, description="Ghidra compiler specification id.")
+
+
+class ApktoolResourcesInput(AnalysisInput):
+    include_strings: bool = True
+    string_tables_only: bool = False
+    locale: str | None = None
+    locales: list[str] | None = None
+
+
 class AndroidDeepInput(AnalysisInput):
     class_name: str | None = None
     method: str | None = None
@@ -327,6 +351,7 @@ class WebToolInput(_Input):
     steps: list[dict[str, Any]] | None = None
     duration: float = 3.0
     full_page: bool = False
+    capture_bodies: bool = False
     selector: str | None = None
     value: str | None = None
 
@@ -616,7 +641,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         returns_evidence=False,
     ),
     _analysis_contract(
-        "decode_android_resources", "Decode APK resources with apktool.", AnalysisInput
+        "decode_android_resources",
+        "Decode APK resources with apktool, optionally projecting string tables.",
+        ApktoolResourcesInput,
     ),
     _analysis_contract("decode_android_smali", "Full apktool smali inventory.", AnalysisInput),
     _analysis_contract(
@@ -629,7 +656,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         "decode_signal_recording", "Decode a logic-signal recording with sigrok.", AnalysisInput
     ),
     _analysis_contract("kuna_decompile", "Decompile a function with Kuna.", FunctionInput),
-    _analysis_contract("ghidra_analyze", "Ghidra overview via pyhidra.", AnalysisInput),
+    _analysis_contract(
+        "ghidra_analyze", "Ghidra overview via pyhidra/pyghidra.", GhidraAnalyzeInput
+    ),
     _analysis_contract("ghidra_function", "Ghidra function inventory.", FunctionInput),
     _analysis_contract("ghidra_decompile", "Ghidra pseudocode.", DecompileInput),
     _analysis_contract("ida_analyze", "IDA overview via the running service.", AnalysisInput),

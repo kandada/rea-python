@@ -526,9 +526,84 @@ def demangle_swift(symbols: list[str]) -> dict[str, Any]:
     }
 
 
+def _is_dmg_file(path: Path) -> bool:
+    try:
+        if path.stat().st_size < 512:
+            return False
+        with path.open("rb") as handle:
+            handle.seek(-512, 2)
+            return handle.read(4) == b"koly"
+    except OSError:
+        return False
+
+
+def _extract_dmg(path: Path, destination: Path, *, overwrite: bool) -> dict[str, Any]:
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+
+    if sys.platform != "darwin":
+        raise _input("extract_artifact", "DMG extraction requires macOS hdiutil")
+    hdiutil = shutil.which("hdiutil")
+    if not hdiutil:
+        raise _input("extract_artifact", "hdiutil is unavailable")
+    mountpoint = Path(tempfile.mkdtemp(prefix="rea-mcp-dmg-"))
+    extracted: list[str] = []
+    try:
+        attached = subprocess.run(
+            [
+                hdiutil,
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-noverify",
+                "-mountpoint",
+                str(mountpoint),
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        if attached.returncode != 0:
+            raise _input(
+                "extract_artifact",
+                f"hdiutil attach failed: {attached.stderr[-500:]}",
+            )
+        for child in mountpoint.rglob("*"):
+            if not child.is_file() or child.is_symlink():
+                continue
+            relative = child.relative_to(mountpoint)
+            target = destination / relative
+            if target.exists() and not overwrite:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(child, target)
+            extracted.append(str(target))
+    finally:
+        subprocess.run(
+            [hdiutil, "detach", str(mountpoint)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        shutil.rmtree(mountpoint, ignore_errors=True)
+    return {
+        "format": "dmg",
+        "output_directory": str(destination),
+        "extracted": extracted,
+        "extracted_count": len(extracted),
+    }
+
+
 def extract_artifact(path: str, output: str, *, overwrite: bool = False) -> dict[str, Any]:
     destination = Path(output).expanduser()
     destination.mkdir(parents=True, exist_ok=True)
+    if _is_dmg_file(Path(path)):
+        return _extract_dmg(Path(path), destination, overwrite=overwrite)
     extracted: list[str] = []
 
     def safe(name: str) -> Path:

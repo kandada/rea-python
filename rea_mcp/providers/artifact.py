@@ -171,7 +171,41 @@ def _inventory_directory(path: Path) -> dict[str, Any]:
     }
 
 
+def _is_dmg(path: Path) -> bool:
+    try:
+        if path.stat().st_size < 512:
+            return False
+        with path.open("rb") as handle:
+            handle.seek(-512, 2)
+            return handle.read(4) == b"koly"
+    except OSError:
+        return False
+
+
+def _inventory_dmg(path: Path) -> dict[str, Any]:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        handle.seek(size - 512)
+        trailer = handle.read(512)
+    digest = sha256_hex(path.read_bytes()) if size <= _MAX_DIGEST_BYTES else None
+    return {
+        "format": "dmg",
+        "entries": [_entry(path.name, size, digest)],
+        "entry_count": 1,
+        "dmg": {
+            "version": struct.unpack(">I", trailer[4:8])[0],
+            "data_fork_offset": struct.unpack(">Q", trailer[24:32])[0],
+            "data_fork_length": struct.unpack(">Q", trailer[32:40])[0],
+            "xml_offset": struct.unpack(">Q", trailer[216:224])[0],
+            "xml_length": struct.unpack(">Q", trailer[224:232])[0],
+            "sector_count": struct.unpack(">Q", trailer[492:500])[0],
+        },
+    }
+
+
 def _inventory_file(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() == ".dmg" or _is_dmg(path):
+        return _inventory_dmg(path)
     size = path.stat().st_size
     digest = sha256_hex(path.read_bytes()) if size <= _MAX_DIGEST_BYTES else None
     return {"format": "file", "entries": [_entry(path.name, size, digest)], "entry_count": 1}

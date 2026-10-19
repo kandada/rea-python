@@ -36,3 +36,31 @@ def test_missing_command_is_error() -> None:
     result = run_owned_process(["/nonexistent/binary-xyz"], timeout=5)
     assert not result.ok
     assert result.error.tag == "ProviderAdapterError"
+
+
+def test_cancellation_is_prompt_and_preserves_output() -> None:
+    import threading
+    import time
+
+    event = threading.Event()
+    timer = threading.Timer(0.3, event.set)
+    timer.start()
+    started = time.monotonic()
+    try:
+        result = run_owned_process(
+            [
+                sys.executable,
+                "-c",
+                "import time; print('started', flush=True); time.sleep(30)",
+            ],
+            timeout=30,
+            cancel_event=event,
+            operation="test_cancel",
+        )
+    finally:
+        timer.cancel()
+    elapsed = time.monotonic() - started
+    assert not result.ok
+    assert result.error.tag == "AnalysisCancelledError"
+    assert elapsed < 10
+    assert "started" in str(result.error.details.get("stdout"))
