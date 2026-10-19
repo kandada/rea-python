@@ -150,11 +150,6 @@ ruff check .
 mypy
 ```
 
-## Releasing
-
-- **CI** runs on branch pushes, pull requests, and manual dispatch. Tag pushes and GitHub Release creation do **not** trigger CI.
-- **PyPI** publishing is local only: `twine upload dist/*`. This repository intentionally contains **no CI publishing workflow**, so creating a GitHub Release never publishes to PyPI.
-
 ## License
 
 MIT. rea-mcp is an independent, unofficial Python port; it is not affiliated with or endorsed by the authors of REA. See [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md).
