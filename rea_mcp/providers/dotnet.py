@@ -97,6 +97,38 @@ class ManagedStaticProvider(AnalysisProvider):
             return err(AnalysisInputError(operation=operation, message=str(cause)))
 
 
+def _paginate_types(members: dict[str, Any], parameters: dict[str, Any]) -> None:
+    types = members.get("types")
+    if not isinstance(types, list):
+        return
+    offset = max(0, int(parameters.get("offset") or 0))
+    limit = min(1000, max(1, int(parameters.get("limit") or 256)))
+    total = len(types)
+    start = min(offset, total)
+    page = types[start : start + limit]
+    method_offset = max(0, int(parameters.get("method_offset") or 0))
+    method_limit = min(1000, max(1, int(parameters.get("method_limit") or 64)))
+    for item in page:
+        methods = item.get("methods")
+        if not isinstance(methods, list):
+            continue
+        method_total = len(methods)
+        method_start = min(method_offset, method_total)
+        method_page = methods[method_start : method_start + method_limit]
+        item["methods_total"] = method_total
+        item["methods_offset"] = method_start
+        item["methods"] = method_page
+        item["methods_next_offset"] = (
+            method_start + len(method_page)
+            if method_start + len(method_page) < method_total
+            else None
+        )
+    members["types_total"] = total
+    members["types_offset"] = start
+    members["types"] = page
+    members["next_offset"] = start + len(page) if start + len(page) < total else None
+
+
 def _analyze_managed(
     data: bytes | mmap.mmap,
     operation: str,
@@ -142,6 +174,7 @@ def _analyze_managed(
                 )
             )
         members["runtime_version"] = runtime_version
+        _paginate_types(members, parameters)
         return ok(
             AnalysisExecution(
                 result=members,

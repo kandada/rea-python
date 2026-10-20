@@ -148,19 +148,23 @@ def inspect_sqlite_database(
 @app.command("inspect-artifact")
 def inspect_artifact(
     path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(500, "--limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """File inventory and digests for zip/apk/asar/tar/directory."""
-    _run("inspect_artifact", path, provider, {})
+    _run("inspect_artifact", path, provider, {"offset": offset, "limit": limit})
 
 
 @app.command("inspect-android-package")
 def inspect_android_package(
     path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(200, "--limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """APK inventory, DEX facts and manifest package facts."""
-    _run("inspect_android_package", path, provider, {})
+    _run("inspect_android_package", path, provider, {"offset": offset, "limit": limit})
 
 
 @app.command("identify-flutter-build")
@@ -278,10 +282,11 @@ def function(
 def decompile(
     path: str = typer.Argument(...),
     function: str = typer.Option("main", "--function"),
+    max_bytes: int = typer.Option(64000, "--max-bytes"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Pseudocode for a function."""
-    _run("decompile", path, provider, {"function": function})
+    _run("decompile", path, provider, {"function": function, "max_bytes": max_bytes})
 
 
 @app.command("search")
@@ -309,10 +314,12 @@ def xrefs(
 @app.command("inspect-managed-members")
 def inspect_managed_members(
     path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(256, "--limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Managed assembly member names and counts."""
-    _run("inspect_managed_members", path, provider, {})
+    _run("inspect_managed_members", path, provider, {"offset": offset, "limit": limit})
 
 
 @app.command("disassemble-managed-method")
@@ -329,10 +336,12 @@ def disassemble_managed_method(
 @app.command("inspect-network-capture")
 def inspect_network_capture(
     path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(100, "--limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """HAR/SAZ capture requests, hosts and status."""
-    _run("inspect_network_capture", path, provider, {})
+    _run("inspect_network_capture", path, provider, {"offset": offset, "limit": limit})
 
 
 @app.command("inspect-harmony-package")
@@ -347,10 +356,24 @@ def inspect_harmony_package(
 @app.command("analyze-javascript-application")
 def analyze_javascript_application(
     path: str = typer.Argument(...),
+    module_offset: int = typer.Option(0, "--module-offset"),
+    module_limit: int = typer.Option(500, "--module-limit"),
+    edge_offset: int = typer.Option(0, "--edge-offset"),
+    edge_limit: int = typer.Option(500, "--edge-limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """JavaScript/Electron module graph."""
-    _run("analyze_javascript_application", path, provider, {})
+    _run(
+        "analyze_javascript_application",
+        path,
+        provider,
+        {
+            "module_offset": module_offset,
+            "module_limit": module_limit,
+            "edge_offset": edge_offset,
+            "edge_limit": edge_limit,
+        },
+    )
 
 
 @app.command("inspect-keyed-archive")
@@ -753,20 +776,30 @@ def decode_android_smali(
 
 @app.command("decompile-android-apk")
 def decompile_android_apk(
-    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+    path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(500, "--limit"),
+    provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Decompile an APK to Java with JADX."""
-    _run("decompile_android_apk", path, provider, {})
+    _run("decompile_android_apk", path, provider, {"offset": offset, "limit": limit})
 
 
 @app.command("decompile-android-class")
 def decompile_android_class(
     path: str = typer.Argument(...),
     class_name: str = typer.Option(..., "--class"),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(500, "--limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Decompile one class with JADX."""
-    _run("decompile_android_class", path, provider, {"class": class_name})
+    _run(
+        "decompile_android_class",
+        path,
+        provider,
+        {"class": class_name, "offset": offset, "limit": limit},
+    )
 
 
 @app.command("decode-signal-recording")
@@ -783,10 +816,11 @@ def decode_signal_recording(
 def kuna_decompile(
     path: str = typer.Argument(...),
     function: str | None = typer.Option(None, "--function"),
+    max_bytes: int = typer.Option(64000, "--max-bytes"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Decompile a function with Kuna."""
-    _run("kuna_decompile", path, provider, {"function": function})
+    _run("kuna_decompile", path, provider, {"function": function, "max_bytes": max_bytes})
 
 
 @app.command("ghidra-analyze")
@@ -1275,10 +1309,11 @@ def list_jeb_units(
 def decompile_jeb_item(
     path: str = typer.Argument(...),
     item: str = typer.Option(..., "--item"),
+    max_bytes: int = typer.Option(64000, "--max-bytes"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Decompile one JEB unit."""
-    _run("decompile_jeb_item", path, provider, {"item": item})
+    _run("decompile_jeb_item", path, provider, {"item": item, "max_bytes": max_bytes})
 
 
 @app.command("start-frida-session")
@@ -1651,10 +1686,16 @@ def procedure_info(
 def procedure_pseudo_code(
     path: str = typer.Argument(...),
     function: str = typer.Option("main", "--function"),
+    max_bytes: int = typer.Option(64000, "--max-bytes"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Pseudocode for a procedure."""
-    _run("procedure_pseudo_code", path, provider, {"function": function})
+    _run(
+        "procedure_pseudo_code",
+        path,
+        provider,
+        {"function": function, "max_bytes": max_bytes},
+    )
 
 
 @app.command("procedure-references")
@@ -1902,10 +1943,12 @@ def cutter_command(
 
 
 @app.command("get-evidence-bundle")
-def get_evidence_bundle() -> None:
-    """Return the session Evidence bundle."""
-    session, _config = _session()
-    emit_json(session.export_bundle())
+def get_evidence_bundle(full: bool = typer.Option(False, "--full")) -> None:
+    """Return the session Evidence bundle (summary by default)."""
+    from ..application.workflows import get_evidence_bundle as _bundle
+
+    session, config = _session()
+    emit_json(_bundle(session, full=full, budget_bytes=config.mcp_max_response_bytes))
 
 
 @app.command("verify-reconstruction")
@@ -1983,12 +2026,17 @@ def find_changed_behavior(
 def batch_decompile(
     path: str = typer.Argument(...),
     functions: list[str] = typer.Option(..., "--function"),
+    max_bytes_per_function: int = typer.Option(64000, "--max-bytes-per-function"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Decompile multiple functions."""
     from ..application.workflows import batch_decompile as _batch
 
-    _run_session(path, provider, lambda session: _batch(session, functions))
+    _run_session(
+        path,
+        provider,
+        lambda session: _batch(session, functions, max_bytes_per_function=max_bytes_per_function),
+    )
 
 
 @app.command("get-call-graph")
@@ -2088,10 +2136,17 @@ def search_android_classes(
 def inspect_android_class(
     path: str = typer.Argument(...),
     class_name: str = typer.Option(..., "--class"),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(500, "--limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Inspect one decompiled Android class."""
-    _run("inspect_android_class", path, provider, {"class_name": class_name})
+    _run(
+        "inspect_android_class",
+        path,
+        provider,
+        {"class_name": class_name, "offset": offset, "limit": limit},
+    )
 
 
 @app.command("inspect-android-method")
@@ -2099,10 +2154,22 @@ def inspect_android_method(
     path: str = typer.Argument(...),
     class_name: str = typer.Option(..., "--class"),
     method: str = typer.Option(..., "--method"),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(500, "--limit"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Inspect one Android method."""
-    _run("inspect_android_method", path, provider, {"class_name": class_name, "method": method})
+    _run(
+        "inspect_android_method",
+        path,
+        provider,
+        {
+            "class_name": class_name,
+            "method": method,
+            "offset": offset,
+            "limit": limit,
+        },
+    )
 
 
 @app.command("trace-android-references")
@@ -2161,12 +2228,18 @@ def observe_web_execution(
     url: str = typer.Option(..., "--url"),
     duration: float = typer.Option(3.0, "--duration"),
     bodies: bool = typer.Option(False, "--bodies"),
+    retain_bodies: bool = typer.Option(False, "--retain-bodies"),
 ) -> None:
     """Observe console output and requests; optionally capture XHR/fetch bodies."""
     _run_runtime(
         "observe_web_execution",
         url,
-        {"url": url, "duration": duration, "capture_bodies": bodies},
+        {
+            "url": url,
+            "duration": duration,
+            "capture_bodies": bodies,
+            "retain_bodies": retain_bodies,
+        },
     )
 
 
@@ -2471,6 +2544,7 @@ def inspect_evidence_bundle(
         paths=list(paths) or None,
         property_keys=list(property_keys) or None,
         evidence_id=evidence_id,
+        budget_bytes=AppConfig().mcp_max_response_bytes,
     )
     if not projected.ok:
         fail(projected.error)
@@ -2789,6 +2863,7 @@ def inspect_analysis_view(
         paths=list(paths) or None,
         property_keys=list(property_keys) or None,
         evidence_id=evidence_id,
+        budget_bytes=AppConfig().mcp_max_response_bytes,
     )
     if not projected.ok:
         fail(projected.error)

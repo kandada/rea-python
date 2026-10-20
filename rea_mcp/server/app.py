@@ -44,6 +44,79 @@ def _open_if_needed(session: BinarySession, path: str | None) -> None:
         raise ToolError(_error_payload(opened.error))
 
 
+def _guard_analysis_result(value: dict[str, Any]) -> dict[str, Any]:
+    budget = AppConfig().mcp_max_response_bytes
+    encoded = json.dumps(value, ensure_ascii=False)
+    size = len(encoded.encode("utf-8"))
+    if size <= budget:
+        return value
+    from ..application.analysis_view import summarize_record
+
+    evidence_id = value.get("evidence_id")
+    return {
+        "truncated": True,
+        "reason": "response_budget",
+        "budget_bytes": budget,
+        "result_bytes": size,
+        "evidence_reference": (
+            {"kind": "retained-evidence", "evidence_id": evidence_id} if evidence_id else None
+        ),
+        "summary": summarize_record(value),
+        "hint": "Open the full Evidence with evidence-export or inspect-analysis-view.",
+    }
+
+
+_TRUNCATE_TEXT_KEYS = (
+    "pseudocode",
+    "source",
+    "snippet",
+    "code",
+    "decompiled",
+    "text",
+    "content",
+)
+
+
+def _truncate_result_text(value: dict[str, Any], max_bytes: Any) -> None:
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        return
+    normalized = value.get("normalized_result")
+    if not isinstance(normalized, dict):
+        return
+    for key in _TRUNCATE_TEXT_KEYS:
+        text = normalized.get(key)
+        if not isinstance(text, str):
+            continue
+        encoded = text.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            continue
+        normalized[key] = encoded[:max_bytes].decode("utf-8", "ignore")
+        normalized[f"{key}_bytes"] = len(encoded)
+        normalized[f"{key}_truncated"] = True
+
+
+def _runtime_summary(operation: str, subject: str, payload: Any) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "operation": operation,
+        "subject": subject,
+        "keys": sorted(payload.keys()) if isinstance(payload, dict) else None,
+    }
+    if isinstance(payload, dict):
+        for key in (
+            "response_count",
+            "request_count",
+            "console_count",
+            "body_bytes_total",
+            "bodies_truncated",
+            "retained_body_bytes",
+            "retained_bodies_truncated",
+            "body_output",
+        ):
+            if key in payload:
+                summary[key] = payload[key]
+    return summary
+
+
 def _enforce_budget(value: dict[str, Any]) -> dict[str, Any]:
     budget = AppConfig().mcp_max_response_bytes
     encoded = json.dumps(value, ensure_ascii=False)
@@ -78,10 +151,16 @@ def _analysis(
     result = session.execute(operation, parameters)
     if not result.ok:
         raise ToolError(_error_payload(result.error))
-    return _enforce_budget(result.value.model_dump())
+    return _guard_analysis_result(result.value.model_dump())
 
 
-def _runtime(operation: str, subject: str, parameters: dict[str, Any]) -> dict[str, Any]:
+def _runtime(
+    operation: str,
+    subject: str,
+    parameters: dict[str, Any],
+    *,
+    session: BinarySession | None = None,
+) -> dict[str, Any]:
     """Run a target-less runtime observation (browser/CDP) through its provider."""
 
     import hashlib
@@ -99,7 +178,26 @@ def _runtime(operation: str, subject: str, parameters: dict[str, Any]) -> dict[s
             result = provider.analyze(operation, target, parameters, None)
             if not result.ok:
                 raise ToolError(_error_payload(result.error))
-            return _enforce_budget(result.value.result)
+            payload = result.value.result
+            budget = AppConfig().mcp_max_response_bytes
+            size = len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+            if size <= budget:
+                return cast("dict[str, Any]", payload)
+            if session is None:
+                return _enforce_budget(cast("dict[str, Any]", payload))
+            evidence_id = session.retain_payload(operation, payload)
+            return {
+                "truncated": True,
+                "reason": "response_budget",
+                "budget_bytes": budget,
+                "result_bytes": size,
+                "evidence_reference": {
+                    "kind": "retained-evidence",
+                    "evidence_id": evidence_id,
+                },
+                "summary": _runtime_summary(operation, subject, payload),
+                "hint": "Open the full Evidence with evidence-export or inspect-analysis-view.",
+            }
     raise ToolError(
         _error_payload(
             AnalysisInputError(operation=operation, message=f"no provider supports {operation}")
@@ -197,6 +295,9 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         ),
     )
 
+    def runtime(operation: str, subject: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        return _runtime(operation, subject, parameters, session=session)
+
     @server.tool(name="open_binary", description="Open a local target and bind a provider.")
     def open_binary(
         path: str,
@@ -258,14 +359,20 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     @server.tool(
         name="inspect_artifact", description="File inventory for archives and directories."
     )
-    def inspect_artifact(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "inspect_artifact", path, {})
+    def inspect_artifact(
+        path: str | None = None, offset: int = 0, limit: int = 500
+    ) -> dict[str, Any]:
+        return _analysis(session, "inspect_artifact", path, {"offset": offset, "limit": limit})
 
     @server.tool(
         name="inspect_android_package", description="APK inventory, DEX and manifest facts."
     )
-    def inspect_android_package(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "inspect_android_package", path, {})
+    def inspect_android_package(
+        path: str | None = None, offset: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        return _analysis(
+            session, "inspect_android_package", path, {"offset": offset, "limit": limit}
+        )
 
     @server.tool(name="identify_flutter_build", description="Flutter AOT snapshot fingerprint.")
     def identify_flutter_build(path: str | None = None) -> dict[str, Any]:
@@ -310,6 +417,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
             paths=paths,
             property_keys=property_keys,
             evidence_id=evidence_id,
+            budget_bytes=AppConfig().mcp_max_response_bytes,
         )
         if not projected.ok:
             raise ToolError(_error_payload(projected.error))
@@ -346,8 +454,10 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "function", path, {"function": function, "limit": limit})
 
     @server.tool(name="decompile", description="Pseudocode for a function.")
-    def decompile(path: str | None = None, function: str = "main") -> dict[str, Any]:
-        return _analysis(session, "decompile", path, {"function": function})
+    def decompile(
+        path: str | None = None, function: str = "main", max_bytes: int = 64_000
+    ) -> dict[str, Any]:
+        return _analysis(session, "decompile", path, {"function": function, "max_bytes": max_bytes})
 
     @server.tool(name="search", description="Search within the target.")
     def search(path: str | None = None, query: str = "", limit: int = 100) -> dict[str, Any]:
@@ -401,8 +511,24 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return doctor_report(build_providers())
 
     @server.tool(name="inspect_managed_members", description="Managed member names and counts.")
-    def inspect_managed_members(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "inspect_managed_members", path, {})
+    def inspect_managed_members(
+        path: str | None = None,
+        offset: int = 0,
+        limit: int = 256,
+        method_offset: int = 0,
+        method_limit: int = 64,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_managed_members",
+            path,
+            {
+                "offset": offset,
+                "limit": limit,
+                "method_offset": method_offset,
+                "method_limit": method_limit,
+            },
+        )
 
     @server.tool(
         name="disassemble_managed_method", description="Disassemble a managed method's IL."
@@ -415,16 +541,36 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         )
 
     @server.tool(name="inspect_network_capture", description="HAR/SAZ capture projection.")
-    def inspect_network_capture(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "inspect_network_capture", path, {})
+    def inspect_network_capture(
+        path: str | None = None, offset: int = 0, limit: int = 100
+    ) -> dict[str, Any]:
+        return _analysis(
+            session, "inspect_network_capture", path, {"offset": offset, "limit": limit}
+        )
 
     @server.tool(name="inspect_harmony_package", description="HarmonyOS HAP package facts.")
     def inspect_harmony_package(path: str | None = None) -> dict[str, Any]:
         return _analysis(session, "inspect_harmony_package", path, {})
 
     @server.tool(name="analyze_javascript_application", description="JS/Electron module graph.")
-    def analyze_javascript_application(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "analyze_javascript_application", path, {})
+    def analyze_javascript_application(
+        path: str | None = None,
+        module_offset: int = 0,
+        module_limit: int = 500,
+        edge_offset: int = 0,
+        edge_limit: int = 500,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "analyze_javascript_application",
+            path,
+            {
+                "module_offset": module_offset,
+                "module_limit": module_limit,
+                "edge_offset": edge_offset,
+                "edge_limit": edge_limit,
+            },
+        )
 
     @server.tool(name="inspect_keyed_archive", description="NSKeyedArchiver inventory.")
     def inspect_keyed_archive(path: str | None = None) -> dict[str, Any]:
@@ -661,17 +807,17 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="observe_web_page", description="Observe a page via playwright.")
     def observe_web_page(url: str) -> dict[str, Any]:
-        return _runtime("observe_web_page", url, {"url": url})
+        return runtime("observe_web_page", url, {"url": url})
 
     @server.tool(name="inspect_cdp_targets", description="List Chrome DevTools Protocol targets.")
     def inspect_cdp_targets(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("inspect_cdp_targets", endpoint or "cdp", {"endpoint": endpoint})
+        return runtime("inspect_cdp_targets", endpoint or "cdp", {"endpoint": endpoint})
 
     @server.tool(name="capture_cdp_network", description="Capture CDP network request metadata.")
     def capture_cdp_network(
         endpoint: str | None = None, duration: float = 5.0, target_url: str | None = None
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "capture_cdp_network",
             endpoint or "cdp",
             {"endpoint": endpoint, "duration": duration, "target_url": target_url},
@@ -702,12 +848,24 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "decode_android_smali", path, {})
 
     @server.tool(name="decompile_android_apk", description="Decompile an APK to Java with JADX.")
-    def decompile_android_apk(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "decompile_android_apk", path, {})
+    def decompile_android_apk(
+        path: str | None = None, offset: int = 0, limit: int = 500
+    ) -> dict[str, Any]:
+        return _analysis(session, "decompile_android_apk", path, {"offset": offset, "limit": limit})
 
     @server.tool(name="decompile_android_class", description="Decompile one class with JADX.")
-    def decompile_android_class(path: str | None = None, class_name: str = "") -> dict[str, Any]:
-        return _analysis(session, "decompile_android_class", path, {"class": class_name})
+    def decompile_android_class(
+        path: str | None = None,
+        class_name: str = "",
+        offset: int = 0,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "decompile_android_class",
+            path,
+            {"class": class_name, "offset": offset, "limit": limit},
+        )
 
     @server.tool(name="decode_signal_recording", description="Decode a recording with sigrok.")
     def decode_signal_recording(
@@ -716,8 +874,12 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "decode_signal_recording", path, {"decoder": decoder})
 
     @server.tool(name="kuna_decompile", description="Decompile a function with Kuna.")
-    def kuna_decompile(path: str | None = None, function: str = "main") -> dict[str, Any]:
-        return _analysis(session, "kuna_decompile", path, {"function": function})
+    def kuna_decompile(
+        path: str | None = None, function: str = "main", max_bytes: int = 64_000
+    ) -> dict[str, Any]:
+        return _analysis(
+            session, "kuna_decompile", path, {"function": function, "max_bytes": max_bytes}
+        )
 
     @server.tool(name="ghidra_analyze", description="Ghidra overview via pyhidra/pyghidra.")
     def ghidra_analyze(
@@ -783,55 +945,55 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="list_adb_devices", description="List attached ADB devices.")
     def list_adb_devices() -> dict[str, Any]:
-        return _runtime("list_adb_devices", "adb", {})
+        return runtime("list_adb_devices", "adb", {})
 
     @server.tool(name="list_adb_packages", description="List installed packages on the device.")
     def list_adb_packages() -> dict[str, Any]:
-        return _runtime("list_adb_packages", "adb", {})
+        return runtime("list_adb_packages", "adb", {})
 
     @server.tool(name="android_app_info", description="Dump package facts for one package.")
     def android_app_info(package: str) -> dict[str, Any]:
-        return _runtime("android_app_info", "adb", {"package": package})
+        return runtime("android_app_info", "adb", {"package": package})
 
     @server.tool(name="adb_shell", description="Run a bounded command through 'adb shell'.")
     def adb_shell(command: list[str], timeout: float = 60.0) -> dict[str, Any]:
-        return _runtime("adb_shell", "adb", {"command": command, "timeout": timeout})
+        return runtime("adb_shell", "adb", {"command": command, "timeout": timeout})
 
     @server.tool(name="list_frida_devices", description="List Frida devices.")
     def list_frida_devices() -> dict[str, Any]:
-        return _runtime("list_frida_devices", "frida", {})
+        return runtime("list_frida_devices", "frida", {})
 
     @server.tool(name="list_frida_applications", description="List applications on a Frida device.")
     def list_frida_applications(device: str | None = None) -> dict[str, Any]:
-        return _runtime("list_frida_applications", "frida", {"device": device})
+        return runtime("list_frida_applications", "frida", {"device": device})
 
     @server.tool(name="list_frida_processes", description="List processes on a Frida device.")
     def list_frida_processes(device: str | None = None) -> dict[str, Any]:
-        return _runtime("list_frida_processes", "frida", {"device": device})
+        return runtime("list_frida_processes", "frida", {"device": device})
 
     @server.tool(name="ida_inspect_provider", description="Probe the configured IDA endpoint.")
     def ida_inspect_provider() -> dict[str, Any]:
-        return _runtime("ida_inspect_provider", "ida", {})
+        return runtime("ida_inspect_provider", "ida", {})
 
     @server.tool(name="jeb_inspect_provider", description="Probe the configured JEB endpoint.")
     def jeb_inspect_provider() -> dict[str, Any]:
-        return _runtime("jeb_inspect_provider", "jeb", {})
+        return runtime("jeb_inspect_provider", "jeb", {})
 
     @server.tool(
         name="inspect_adb_client", description="Inspect the caller-selected adb binary and version."
     )
     def inspect_adb_client() -> dict[str, Any]:
-        return _runtime("inspect_adb_client", "adb", {})
+        return runtime("inspect_adb_client", "adb", {})
 
     @server.tool(
         name="inspect_adb_device", description="Inspect one device's build identity via getprop."
     )
     def inspect_adb_device(serial: str) -> dict[str, Any]:
-        return _runtime("inspect_adb_device", "adb", {"serial": serial})
+        return runtime("inspect_adb_device", "adb", {"serial": serial})
 
     @server.tool(name="pull_adb_package", description="Pull every APK of an installed package.")
     def pull_adb_package(serial: str, package: str, output_directory: str) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "pull_adb_package",
             "adb",
             {"serial": serial, "package": package, "output_directory": output_directory},
@@ -841,7 +1003,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     def read_adb_logcat(
         serial: str, count: int = 500, buffer: str = "main", pid: int | None = None
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "read_adb_logcat",
             "adb",
             {"serial": serial, "count": count, "buffer": buffer, "pid": pid},
@@ -851,11 +1013,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         name="inspect_adb_package", description="Dump package facts for one installed package."
     )
     def inspect_adb_package(serial: str, package: str) -> dict[str, Any]:
-        return _runtime("inspect_adb_package", "adb", {"serial": serial, "package": package})
+        return runtime("inspect_adb_package", "adb", {"serial": serial, "package": package})
 
     @server.tool(name="pull_adb_file", description="Pull one absolute device file.")
     def pull_adb_file(serial: str, device_path: str, output_directory: str) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "pull_adb_file",
             "adb",
             {"serial": serial, "device_path": device_path, "output_directory": output_directory},
@@ -865,7 +1027,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     def push_adb_file(
         serial: str, local_path: str, device_path: str, overwrite: bool = False
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "push_adb_file",
             "adb",
             {
@@ -878,43 +1040,43 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="capture_adb_screen", description="Capture a PNG screenshot from the device.")
     def capture_adb_screen(serial: str, output_directory: str) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "capture_adb_screen", "adb", {"serial": serial, "output_directory": output_directory}
         )
 
     @server.tool(name="list_adb_processes", description="List device processes (ps -A).")
     def list_adb_processes(serial: str) -> dict[str, Any]:
-        return _runtime("list_adb_processes", "adb", {"serial": serial})
+        return runtime("list_adb_processes", "adb", {"serial": serial})
 
     @server.tool(name="list_adb_directory", description="List one absolute device directory.")
     def list_adb_directory(serial: str, device_path: str) -> dict[str, Any]:
-        return _runtime("list_adb_directory", "adb", {"serial": serial, "device_path": device_path})
+        return runtime("list_adb_directory", "adb", {"serial": serial, "device_path": device_path})
 
     @server.tool(name="list_adb_features", description="List device package-manager features.")
     def list_adb_features(serial: str) -> dict[str, Any]:
-        return _runtime("list_adb_features", "adb", {"serial": serial})
+        return runtime("list_adb_features", "adb", {"serial": serial})
 
     @server.tool(name="list_adb_services", description="List device services.")
     def list_adb_services(serial: str) -> dict[str, Any]:
-        return _runtime("list_adb_services", "adb", {"serial": serial})
+        return runtime("list_adb_services", "adb", {"serial": serial})
 
     @server.tool(name="inspect_adb_display", description="Dump display state.")
     def inspect_adb_display(serial: str) -> dict[str, Any]:
-        return _runtime("inspect_adb_display", "adb", {"serial": serial})
+        return runtime("inspect_adb_display", "adb", {"serial": serial})
 
     @server.tool(name="inspect_adb_window", description="Dump window state.")
     def inspect_adb_window(serial: str) -> dict[str, Any]:
-        return _runtime("inspect_adb_window", "adb", {"serial": serial})
+        return runtime("inspect_adb_window", "adb", {"serial": serial})
 
     @server.tool(name="read_adb_setting", description="Read one settings namespace key.")
     def read_adb_setting(serial: str, namespace: str, key: str) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "read_adb_setting", "adb", {"serial": serial, "namespace": namespace, "key": key}
         )
 
     @server.tool(name="collect_adb_bugreport", description="Collect a device bugreport archive.")
     def collect_adb_bugreport(serial: str, output_directory: str) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "collect_adb_bugreport", "adb", {"serial": serial, "output_directory": output_directory}
         )
 
@@ -922,11 +1084,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         name="resolve_adb_packages", description="Resolve packages by case-insensitive substring."
     )
     def resolve_adb_packages(serial: str, query: str) -> dict[str, Any]:
-        return _runtime("resolve_adb_packages", "adb", {"serial": serial, "query": query})
+        return runtime("resolve_adb_packages", "adb", {"serial": serial, "query": query})
 
     @server.tool(name="install_adb_package", description="Install a local APK.")
     def install_adb_package(serial: str, apk_path: str, replace: bool = False) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "install_adb_package",
             "adb",
             {"serial": serial, "apk_path": apk_path, "replace": replace},
@@ -934,11 +1096,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="uninstall_adb_package", description="Uninstall an installed package.")
     def uninstall_adb_package(serial: str, package: str) -> dict[str, Any]:
-        return _runtime("uninstall_adb_package", "adb", {"serial": serial, "package": package})
+        return runtime("uninstall_adb_package", "adb", {"serial": serial, "package": package})
 
     @server.tool(name="start_adb_app", description="Start an app's launcher activity.")
     def start_adb_app(serial: str, package: str) -> dict[str, Any]:
-        return _runtime("start_adb_app", "adb", {"serial": serial, "package": package})
+        return runtime("start_adb_app", "adb", {"serial": serial, "package": package})
 
     @server.tool(name="start_adb_activity", description="Start an activity with an intent.")
     def start_adb_activity(
@@ -948,7 +1110,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         component: str | None = None,
         extras: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "start_adb_activity",
             "adb",
             {
@@ -962,7 +1124,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="stop_adb_app", description="Force-stop an app.")
     def stop_adb_app(serial: str, package: str) -> dict[str, Any]:
-        return _runtime("stop_adb_app", "adb", {"serial": serial, "package": package})
+        return runtime("stop_adb_app", "adb", {"serial": serial, "package": package})
 
     @server.tool(name="inspect_packet_fields", description="Per-packet capture fields.")
     def inspect_packet_fields(path: str | None = None, limit: int = 500) -> dict[str, Any]:
@@ -974,11 +1136,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="inspect_pcap_client", description="Inspect the tshark client.")
     def inspect_pcap_client() -> dict[str, Any]:
-        return _runtime("inspect_pcap_client", "pcap", {})
+        return runtime("inspect_pcap_client", "pcap", {})
 
     @server.tool(name="inspect_signal_decoders", description="List sigrok decoders.")
     def inspect_signal_decoders() -> dict[str, Any]:
-        return _runtime("inspect_signal_decoders", "sigrok", {})
+        return runtime("inspect_signal_decoders", "sigrok", {})
 
     @server.tool(name="extract_firmware", description="Extract firmware regions to files.")
     def extract_firmware(path: str | None = None, output_directory: str = "") -> dict[str, Any]:
@@ -986,7 +1148,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="inspect_jeb_client", description="Inspect the JEB service.")
     def inspect_jeb_client() -> dict[str, Any]:
-        return _runtime("inspect_jeb_client", "jeb", {})
+        return runtime("inspect_jeb_client", "jeb", {})
 
     @server.tool(name="open_jeb_project", description="Open a project in JEB.")
     def open_jeb_project(path: str | None = None) -> dict[str, Any]:
@@ -997,38 +1159,42 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "list_jeb_units", path, {})
 
     @server.tool(name="decompile_jeb_item", description="Decompile one JEB unit.")
-    def decompile_jeb_item(path: str | None = None, item: str = "") -> dict[str, Any]:
-        return _analysis(session, "decompile_jeb_item", path, {"item": item})
+    def decompile_jeb_item(
+        path: str | None = None, item: str = "", max_bytes: int = 64_000
+    ) -> dict[str, Any]:
+        return _analysis(
+            session, "decompile_jeb_item", path, {"item": item, "max_bytes": max_bytes}
+        )
 
     @server.tool(name="start_frida_session", description="Start a Frida session.")
     def start_frida_session(
         device: str | None = None, target: str | int | None = None, spawn: bool = False
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "start_frida_session", "frida", {"device": device, "target": target, "spawn": spawn}
         )
 
     @server.tool(name="frida_session_status", description="Report a Frida session.")
     def frida_session_status(session_id: str) -> dict[str, Any]:
-        return _runtime("frida_session_status", "frida", {"session_id": session_id})
+        return runtime("frida_session_status", "frida", {"session_id": session_id})
 
     @server.tool(name="load_frida_script", description="Load a Frida script.")
     def load_frida_script(session_id: str, source: str, name: str | None = None) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "load_frida_script", "frida", {"session_id": session_id, "source": source, "name": name}
         )
 
     @server.tool(name="unload_frida_script", description="Unload a Frida script.")
     def unload_frida_script(session_id: str, name: str) -> dict[str, Any]:
-        return _runtime("unload_frida_script", "frida", {"session_id": session_id, "name": name})
+        return runtime("unload_frida_script", "frida", {"session_id": session_id, "name": name})
 
     @server.tool(name="resume_frida_session", description="Resume a spawned Frida session.")
     def resume_frida_session(session_id: str) -> dict[str, Any]:
-        return _runtime("resume_frida_session", "frida", {"session_id": session_id})
+        return runtime("resume_frida_session", "frida", {"session_id": session_id})
 
     @server.tool(name="close_frida_session", description="Close a Frida session.")
     def close_frida_session(session_id: str) -> dict[str, Any]:
-        return _runtime("close_frida_session", "frida", {"session_id": session_id})
+        return runtime("close_frida_session", "frida", {"session_id": session_id})
 
     @server.tool(name="instrument_with_frida", description="Attach and collect script messages.")
     def instrument_with_frida(
@@ -1037,7 +1203,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         device: str | None = None,
         duration: float = 2.0,
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "instrument_with_frida",
             "frida",
             {"device": device, "target": target, "source": source, "duration": duration},
@@ -1196,8 +1362,15 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "procedure_info", path, {"function": function})
 
     @server.tool(name="procedure_pseudo_code", description="Pseudocode for a procedure.")
-    def procedure_pseudo_code(function: str = "main", path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "procedure_pseudo_code", path, {"function": function})
+    def procedure_pseudo_code(
+        function: str = "main", path: str | None = None, max_bytes: int = 64_000
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "procedure_pseudo_code",
+            path,
+            {"function": function, "max_bytes": max_bytes},
+        )
 
     @server.tool(name="procedure_references", description="Callers and callees.")
     def procedure_references(
@@ -1286,11 +1459,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="gdb_session_status", description="Report a GDB session.")
     def gdb_session_status(session_id: str) -> dict[str, Any]:
-        return _runtime("gdb_session_status", "debug", {"session_id": session_id})
+        return runtime("gdb_session_status", "debug", {"session_id": session_id})
 
     @server.tool(name="close_gdb_session", description="Close a GDB session.")
     def close_gdb_session(session_id: str) -> dict[str, Any]:
-        return _runtime("close_gdb_session", "debug", {"session_id": session_id})
+        return runtime("close_gdb_session", "debug", {"session_id": session_id})
 
     @server.tool(name="gdb_console", description="Run GDB batch commands.")
     def gdb_console(
@@ -1304,11 +1477,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="rizin_debug_session_status", description="Report a Rizin debug session.")
     def rizin_debug_session_status(session_id: str) -> dict[str, Any]:
-        return _runtime("rizin_debug_session_status", "debug", {"session_id": session_id})
+        return runtime("rizin_debug_session_status", "debug", {"session_id": session_id})
 
     @server.tool(name="close_rizin_debug_session", description="Close a Rizin debug session.")
     def close_rizin_debug_session(session_id: str) -> dict[str, Any]:
-        return _runtime("close_rizin_debug_session", "debug", {"session_id": session_id})
+        return runtime("close_rizin_debug_session", "debug", {"session_id": session_id})
 
     @server.tool(name="rizin_debug_command", description="Run a Rizin debug command.")
     def rizin_debug_command(command: str, path: str | None = None) -> dict[str, Any]:
@@ -1320,17 +1493,20 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="list_cutter_sessions", description="List Cutter bridge sessions.")
     def list_cutter_sessions() -> dict[str, Any]:
-        return _runtime("list_cutter_sessions", "debug", {})
+        return runtime("list_cutter_sessions", "debug", {})
 
     @server.tool(name="cutter_command", description="Run a command through the Cutter bridge.")
     def cutter_command(command: str, path: str | None = None) -> dict[str, Any]:
         return _analysis(session, "cutter_command", path, {"command": command})
 
-    @server.tool(name="get_evidence_bundle", description="Return the session Evidence bundle.")
-    def get_evidence_bundle() -> dict[str, Any]:
+    @server.tool(
+        name="get_evidence_bundle",
+        description="Return a summary of the session Evidence bundle (or the full bundle).",
+    )
+    def get_evidence_bundle(full: bool = False) -> dict[str, Any]:
         from ..application.workflows import get_evidence_bundle as _bundle
 
-        return _bundle(session)
+        return _bundle(session, full=full, budget_bytes=AppConfig().mcp_max_response_bytes)
 
     @server.tool(name="verify_reconstruction", description="Verify a reconstruction ledger.")
     def verify_reconstruction(ledger: dict[str, Any]) -> dict[str, Any]:
@@ -1363,7 +1539,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _compare(left, right)
 
     @server.tool(name="correlate_static_and_runtime", description="Correlate static and runtime.")
-    def correlate_static_and_runtime(left: str, right: str) -> dict[str, Any]:
+    def correlate_static_andruntime(left: str, right: str) -> dict[str, Any]:
         from ..application.workflows import correlate_static_and_runtime as _correlate
 
         return _correlate(left, right)
@@ -1375,10 +1551,12 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _find(left, right)
 
     @server.tool(name="batch_decompile", description="Decompile multiple functions.")
-    def batch_decompile(functions: list[str]) -> dict[str, Any]:
+    def batch_decompile(
+        functions: list[str], max_bytes_per_function: int = 64_000
+    ) -> dict[str, Any]:
         from ..application.workflows import batch_decompile as _batch
 
-        return _batch(session, functions)
+        return _batch(session, functions, max_bytes_per_function=max_bytes_per_function)
 
     @server.tool(name="get_call_graph", description="Build a function call graph.")
     def get_call_graph(limit: int = 50) -> dict[str, Any]:
@@ -1412,7 +1590,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="inspect_apktool_client", description="Inspect the apktool client.")
     def inspect_apktool_client() -> dict[str, Any]:
-        return _runtime("inspect_apktool_client", "apktool", {})
+        return runtime("inspect_apktool_client", "apktool", {})
 
     @server.tool(name="inspect_dart_aot", description="Static Dart AOT snapshot facts.")
     def inspect_dart_aot(path: str | None = None) -> dict[str, Any]:
@@ -1425,18 +1603,32 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "search_android_classes", path, {"query": query, "limit": limit})
 
     @server.tool(name="inspect_android_class", description="Inspect one decompiled class.")
-    def inspect_android_class(path: str | None = None, class_name: str = "") -> dict[str, Any]:
-        return _analysis(session, "inspect_android_class", path, {"class_name": class_name})
+    def inspect_android_class(
+        path: str | None = None,
+        class_name: str = "",
+        offset: int = 0,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_android_class",
+            path,
+            {"class_name": class_name, "offset": offset, "limit": limit},
+        )
 
     @server.tool(name="inspect_android_method", description="Inspect one Android method.")
     def inspect_android_method(
-        path: str | None = None, class_name: str = "", method: str = ""
+        path: str | None = None,
+        class_name: str = "",
+        method: str = "",
+        offset: int = 0,
+        limit: int = 500,
     ) -> dict[str, Any]:
         return _analysis(
             session,
             "inspect_android_method",
             path,
-            {"class_name": class_name, "method": method},
+            {"class_name": class_name, "method": method, "offset": offset, "limit": limit},
         )
 
     @server.tool(name="trace_android_references", description="Search references across sources.")
@@ -1449,48 +1641,56 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="list_browser_targets", description="List browser CDP targets.")
     def list_browser_targets(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("list_browser_targets", "cdp", {"endpoint": endpoint})
+        return runtime("list_browser_targets", "cdp", {"endpoint": endpoint})
 
     @server.tool(name="list_electron_targets", description="List Electron CDP targets.")
     def list_electron_targets(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("list_electron_targets", "cdp", {"endpoint": endpoint})
+        return runtime("list_electron_targets", "cdp", {"endpoint": endpoint})
 
     @server.tool(
         name="list_javascript_runtime_targets", description="List JavaScript runtime targets."
     )
     def list_javascript_runtime_targets(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("list_javascript_runtime_targets", "cdp", {"endpoint": endpoint})
+        return runtime("list_javascript_runtime_targets", "cdp", {"endpoint": endpoint})
 
     @server.tool(
         name="inspect_web_page", description="Inspect a page's title, scripts, forms and meta."
     )
     def inspect_web_page(url: str) -> dict[str, Any]:
-        return _runtime("inspect_web_page", url, {"url": url})
+        return runtime("inspect_web_page", url, {"url": url})
 
     @server.tool(
         name="inspect_web_event_listeners",
         description="Inspect inline handlers and addEventListener use.",
     )
     def inspect_web_event_listeners(url: str) -> dict[str, Any]:
-        return _runtime("inspect_web_event_listeners", url, {"url": url})
+        return runtime("inspect_web_event_listeners", url, {"url": url})
 
     @server.tool(name="observe_web_execution", description="Observe console output and requests.")
     def observe_web_execution(
-        url: str, duration: float = 3.0, capture_bodies: bool = False
+        url: str,
+        duration: float = 3.0,
+        capture_bodies: bool = False,
+        retain_bodies: bool = False,
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "observe_web_execution",
             url,
-            {"url": url, "duration": duration, "capture_bodies": capture_bodies},
+            {
+                "url": url,
+                "duration": duration,
+                "capture_bodies": capture_bodies,
+                "retain_bodies": retain_bodies,
+            },
         )
 
     @server.tool(name="observe_web_session", description="Observe cookies and web storage.")
     def observe_web_session(url: str) -> dict[str, Any]:
-        return _runtime("observe_web_session", url, {"url": url})
+        return runtime("observe_web_session", url, {"url": url})
 
     @server.tool(name="capture_web_screenshot", description="Capture a page screenshot.")
     def capture_web_screenshot(url: str, output: str, full_page: bool = False) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "capture_web_screenshot",
             "url",
             {"url": url, "output": output, "full_page": full_page},
@@ -1498,31 +1698,31 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="compare_web_screenshots", description="Compare two screenshots.")
     def compare_web_screenshots(left: str, right: str) -> dict[str, Any]:
-        return _runtime("compare_web_screenshots", "web", {"left": left, "right": right})
+        return runtime("compare_web_screenshots", "web", {"left": left, "right": right})
 
     @server.tool(name="capture_browser_scenario", description="Run a browser scenario.")
     def capture_browser_scenario(steps: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        return _runtime("capture_browser_scenario", "web", {"steps": steps})
+        return runtime("capture_browser_scenario", "web", {"steps": steps})
 
     @server.tool(name="capture_electron_scenario", description="Run an Electron/CDP scenario.")
     def capture_electron_scenario(
         endpoint: str | None = None, steps: list[dict[str, Any]] | None = None
     ) -> dict[str, Any]:
-        return _runtime("capture_electron_scenario", "cdp", {"endpoint": endpoint, "steps": steps})
+        return runtime("capture_electron_scenario", "cdp", {"endpoint": endpoint, "steps": steps})
 
     @server.tool(name="inspect_electron_page", description="Inspect an Electron page target.")
     def inspect_electron_page(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("inspect_electron_page", "cdp", {"endpoint": endpoint})
+        return runtime("inspect_electron_page", "cdp", {"endpoint": endpoint})
 
     @server.tool(name="observe_javascript_runtime", description="List runtime targets.")
-    def observe_javascript_runtime(endpoint: str | None = None) -> dict[str, Any]:
-        return _runtime("observe_javascript_runtime", "cdp", {"endpoint": endpoint})
+    def observe_javascriptruntime(endpoint: str | None = None) -> dict[str, Any]:
+        return runtime("observe_javascript_runtime", "cdp", {"endpoint": endpoint})
 
     @server.tool(name="reconcile_javascript_runtime", description="Reconcile runtime target sets.")
-    def reconcile_javascript_runtime(
+    def reconcile_javascriptruntime(
         endpoint: str | None = None, left: str | None = None, right: str | None = None
     ) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "reconcile_javascript_runtime",
             "cdp",
             {"endpoint": endpoint, "left": left, "right": right},
@@ -1530,37 +1730,37 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="analyze_web_bundle", description="Analyze a local JavaScript bundle.")
     def analyze_web_bundle(path: str) -> dict[str, Any]:
-        return _runtime("analyze_web_bundle", path, {"path": path})
+        return runtime("analyze_web_bundle", path, {"path": path})
 
     @server.tool(name="export_web_scripts", description="Export page scripts to files.")
     def export_web_scripts(url: str, output: str) -> dict[str, Any]:
-        return _runtime("export_web_scripts", url, {"url": url, "output": output})
+        return runtime("export_web_scripts", url, {"url": url, "output": output})
 
     @server.tool(name="recover_javascript_sources", description="Recover sources from source maps.")
     def recover_javascript_sources(url: str, output: str) -> dict[str, Any]:
-        return _runtime("recover_javascript_sources", url, {"url": url, "output": output})
+        return runtime("recover_javascript_sources", url, {"url": url, "output": output})
 
     @server.tool(
         name="trace_web_module_imports", description="Trace module imports across scripts."
     )
     def trace_web_module_imports(url: str) -> dict[str, Any]:
-        return _runtime("trace_web_module_imports", url, {"url": url})
+        return runtime("trace_web_module_imports", url, {"url": url})
 
     @server.tool(name="trace_web_source_location", description="Find a symbol in a source file.")
     def trace_web_source_location(source_url: str, symbol: str) -> dict[str, Any]:
-        return _runtime(
+        return runtime(
             "trace_web_source_location", source_url, {"source_url": source_url, "symbol": symbol}
         )
 
     @server.tool(name="discover_webmcp_tools", description="Discover WebMCP declarations.")
     def discover_webmcp_tools(url: str) -> dict[str, Any]:
-        return _runtime("discover_webmcp_tools", url, {"url": url})
+        return runtime("discover_webmcp_tools", url, {"url": url})
 
     @server.tool(name="trace_native_ui_action", description="Trace a native UI action.")
     def trace_native_ui_action(
         selector: str | None = None, value: str | None = None
     ) -> dict[str, Any]:
-        return _runtime("trace_native_ui_action", "web", {"selector": selector, "value": value})
+        return runtime("trace_native_ui_action", "web", {"selector": selector, "value": value})
 
     @server.tool(name="binary_overview", description="Alias for overview analysis.")
     def binary_overview(path: str | None = None) -> dict[str, Any]:

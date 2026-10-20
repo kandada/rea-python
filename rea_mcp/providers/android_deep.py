@@ -18,6 +18,7 @@ from ..domain.result import Result, err, ok
 from ..process.supervision import run_owned_process
 from .base import AnalysisExecution, CapabilityDescriptor, CapabilityEffects
 from .engines import _CliEngine, _jadx_operation_timeout
+from .paging import page_lines
 from .registry import TargetSupport
 
 _PROVIDER = ProviderIdentity(id="android-deep", name="REA-Python Android deep", version="1")
@@ -126,13 +127,22 @@ class AndroidDeepProvider(_CliEngine):
                 AnalysisInputError(operation=operation, message=f"class not found: {class_name}")
             )
         source = found.read_text(encoding="utf-8", errors="replace")
+        page = page_lines(
+            source,
+            offset=int(parameters.get("offset") or 0),
+            limit=int(parameters.get("limit") or 500),
+        )
         return ok(
             AnalysisExecution(
                 result={
                     "class": class_name,
                     "path": found.as_posix(),
                     "line_count": source.count("\n") + 1,
-                    "source": source[:500_000],
+                    "source_bytes": len(source.encode("utf-8")),
+                    "source_line_total": page["line_total"],
+                    "source_offset": page["offset"],
+                    "next_offset": page["next_offset"],
+                    "source": page["text"],
                 },
                 provider=self.identity(),
             )
@@ -156,9 +166,21 @@ class AndroidDeepProvider(_CliEngine):
             return err(
                 AnalysisInputError(operation=operation, message=f"method not found: {method}")
             )
+        page = page_lines(
+            snippet,
+            offset=int(parameters.get("offset") or 0),
+            limit=int(parameters.get("limit") or 500),
+        )
         return ok(
             AnalysisExecution(
-                result={"class": class_name, "method": method, "snippet": snippet},
+                result={
+                    "class": class_name,
+                    "method": method,
+                    "snippet_line_total": page["line_total"],
+                    "snippet_offset": page["offset"],
+                    "next_offset": page["next_offset"],
+                    "snippet": page["text"],
+                },
                 provider=self.identity(),
             )
         )

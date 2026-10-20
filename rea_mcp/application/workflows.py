@@ -10,9 +10,25 @@ from typing import Any
 from ..domain.analysis_error import AnalysisInputError
 
 
-def get_evidence_bundle(session: Any) -> dict[str, Any]:
+def get_evidence_bundle(
+    session: Any, *, full: bool = False, budget_bytes: int = 512 * 1024
+) -> dict[str, Any]:
+    from .analysis_view import summarize_bundle
+
     bundle: dict[str, Any] = session.export_bundle()
-    return bundle
+    if not full:
+        return summarize_bundle(bundle)
+    size = len(json.dumps(bundle, ensure_ascii=False).encode("utf-8"))
+    if size <= budget_bytes:
+        return bundle
+    return {
+        "truncated": True,
+        "reason": "response_budget",
+        "budget_bytes": budget_bytes,
+        "result_bytes": size,
+        "summary": summarize_bundle(bundle),
+        "hint": "Use evidence-export to write the complete bundle to a file.",
+    }
 
 
 def verify_reconstruction(ledger: dict[str, Any]) -> dict[str, Any]:
@@ -152,14 +168,30 @@ def _result(session: Any, operation: str, parameters: dict[str, Any]) -> dict[st
     return result.value.normalized_result or {}
 
 
-def batch_decompile(session: Any, functions: list[str]) -> dict[str, Any]:
+def batch_decompile(
+    session: Any,
+    functions: list[str],
+    *,
+    max_bytes_per_function: int = 64_000,
+) -> dict[str, Any]:
     results = []
     for name in functions[:50]:
         payload = _result(session, "decompile", {"function": name})
+        pseudocode = payload.get("pseudocode")
+        truncated = False
+        pseudocode_bytes = None
+        if isinstance(pseudocode, str):
+            encoded = pseudocode.encode("utf-8")
+            pseudocode_bytes = len(encoded)
+            if max_bytes_per_function > 0 and pseudocode_bytes > max_bytes_per_function:
+                pseudocode = encoded[:max_bytes_per_function].decode("utf-8", "ignore")
+                truncated = True
         results.append(
             {
                 "function": name,
-                "pseudocode": payload.get("pseudocode"),
+                "pseudocode": pseudocode,
+                "pseudocode_bytes": pseudocode_bytes,
+                "pseudocode_truncated": truncated,
                 "error": payload.get("error"),
             }
         )

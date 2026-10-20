@@ -8,7 +8,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOG_LEVELS = {"trace", "debug", "info", "warn", "error", "silent"}
-_DEFAULT_RESPONSE_BUDGET = 10 * 1024 * 1024
+_DEFAULT_RESPONSE_BUDGET = 512 * 1024
 _DEFAULT_COMPACT_BUDGET = 13312
 
 # Per-client schema presets. ``input`` is 'full' or 'compact'; ``output`` is 'full'

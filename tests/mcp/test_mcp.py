@@ -107,19 +107,64 @@ async def test_target_content_tools_marked_untrusted() -> None:
     )
 
 
-async def test_response_budget_is_enforced(monkeypatch: Any, big_plist_file: Path) -> None:
+async def test_response_budget_returns_summary(monkeypatch: Any, big_plist_file: Path) -> None:
     class _TightBudget:
         mcp_max_response_bytes = 1024
 
     monkeypatch.setattr("rea_mcp.server.app.AppConfig", lambda: _TightBudget())
     server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
     await _call(server, "open_binary", {"path": str(big_plist_file)})
-    try:
-        await _call(server, "inspect_plist", {})
-    except Exception as cause:  # ToolError text carries the structured payload
-        assert "RESOURCE_CONSTRAINT" in str(cause)
-    else:
-        raise AssertionError("an oversized result should be rejected")
+    result = await _call(server, "inspect_plist", {})
+    assert result["truncated"] is True
+    assert result["reason"] == "response_budget"
+    assert result["evidence_reference"]["evidence_id"].startswith("ev_")
+    assert result["summary"]["operation"] == "inspect_plist"
+
+
+async def test_runtime_oversized_result_is_retained(monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+
+    from rea_mcp.domain.result import ok
+    from rea_mcp.providers.base import AnalysisExecution, ProviderIdentity
+
+    class _FakeProvider:
+        def capabilities(self) -> list[Any]:
+            return [SimpleNamespace(operation="observe_web_page")]
+
+        def analyze(
+            self, operation: str, target: Any, parameters: dict[str, Any], progress: Any
+        ) -> Any:
+            del operation, target, parameters, progress
+            return ok(
+                AnalysisExecution(
+                    result={"blob": "x" * 5000},
+                    provider=ProviderIdentity(id="fake", name="Fake", version="1"),
+                )
+            )
+
+    class _TightBudget:
+        mcp_max_response_bytes = 1024
+
+    monkeypatch.setattr("rea_mcp.server.app.AppConfig", lambda: _TightBudget())
+    monkeypatch.setattr("rea_mcp.server.app.build_providers", lambda: [_FakeProvider()])
+    session = create_binary_session(AppConfig())
+    server = build_mcp_server(session, AppConfig())
+    result = await _call(server, "observe_web_page", {"url": "https://example.invalid"})
+    assert result["truncated"] is True
+    evidence_id = result["evidence_reference"]["evidence_id"]
+    assert evidence_id.startswith("ev_")
+    assert any(record.evidence_id == evidence_id for record in session.evidence_records())
+
+
+async def test_evidence_bundle_defaults_to_summary(elf_file: Path) -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    await _call(server, "open_binary", {"path": str(elf_file)})
+    await _call(server, "inspect_binary_layout", {})
+    summary = await _call(server, "get_evidence_bundle", {})
+    assert summary["kind"] == "bundle"
+    assert summary["record_count"] == 1
+    full = await _call(server, "get_evidence_bundle", {"full": True})
+    assert full["records"][0]["operation"] == "inspect_binary_layout"
 
 
 def test_setup_install_skill_and_write_all(tmp_path: Path) -> None:
@@ -259,3 +304,18 @@ def test_setup_edits_last_duplicate_member(tmp_path: Path) -> None:
     data = json.loads(_strip_jsonc(text))
     assert data["mcpServers"]["second"]["command"] == "b"
     assert "rea-mcp" in data["mcpServers"]
+
+
+def test_truncate_result_text_adds_metadata() -> None:
+    from rea_mcp.server.app import _truncate_result_text
+
+    payload = {"normalized_result": {"pseudocode": "x" * 1000}}
+    _truncate_result_text(payload, 100)
+    result = payload["normalized_result"]
+    assert result["pseudocode"] == "x" * 100
+    assert result["pseudocode_bytes"] == 1000
+    assert result["pseudocode_truncated"] is True
+
+    untouched = {"normalized_result": {"pseudocode": "abc"}}
+    _truncate_result_text(untouched, 100)
+    assert untouched["normalized_result"] == {"pseudocode": "abc"}

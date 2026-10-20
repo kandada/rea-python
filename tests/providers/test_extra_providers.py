@@ -1,7 +1,10 @@
 from pathlib import Path
 
 from rea_mcp.domain.binary_target import parse_binary_target
+from rea_mcp.providers.android import AndroidProvider
 from rea_mcp.providers.apple import KeyedArchiveProvider
+from rea_mcp.providers.artifact import ArtifactProvider
+from rea_mcp.providers.dotnet import ManagedStaticProvider
 from rea_mcp.providers.harmony import HarmonyProvider
 from rea_mcp.providers.javascript import JavaScriptApplicationProvider
 from rea_mcp.providers.network_capture import NetworkCaptureProvider
@@ -24,6 +27,85 @@ def test_har_capture(har_file: Path) -> None:
     hosts = result.value.result["hosts"]
     assert hosts["example.com"] == 1
     assert hosts["api.example.com"] == 1
+
+
+def test_har_capture_pages(har_file: Path) -> None:
+    result = NetworkCaptureProvider().analyze(
+        "inspect_network_capture",
+        _target(har_file),
+        {"offset": 1, "limit": 1},
+        None,
+    )  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["request_total"] == 2
+    assert data["requests_offset"] == 1
+    assert len(data["requests"]) == 1
+    assert data["next_offset"] is None
+
+
+def test_artifact_pages(zip_file: Path) -> None:
+    result = ArtifactProvider().analyze(
+        "inspect_artifact",
+        _target(zip_file),
+        {"offset": 1, "limit": 1},
+        None,
+    )  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["entry_total"] == 2
+    assert data["returned_entry_count"] == 1
+    assert data["entries_offset"] == 1
+    assert data["next_offset"] is None
+    assert data["entries"][0]["path"] == "dir/b.txt"
+
+
+def test_javascript_application_pages(js_dir: Path) -> None:
+    result = JavaScriptApplicationProvider().analyze(
+        "analyze_javascript_application",
+        _target(js_dir),
+        {"module_limit": 1, "edge_limit": 1},
+        None,
+    )  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["module_count"] == 3
+    assert len(data["modules"]) == 1
+    assert data["next_module_offset"] == 1
+    assert data["edge_count"] >= 2
+    assert len(data["edges"]) == 1
+    assert data["next_edge_offset"] == 1
+
+
+def test_android_package_pages(apk_file: Path) -> None:
+    result = AndroidProvider().analyze(
+        "inspect_android_package",
+        _target(apk_file),
+        {"offset": 0, "limit": 1},
+        None,
+    )  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["permissions_offset"] == 0
+    assert "permissions_total" in data
+    assert "component_totals" in data
+
+
+def test_managed_members_page(pe_clr_file: Path) -> None:
+    result = ManagedStaticProvider().analyze(
+        "inspect_managed_members",
+        _target(pe_clr_file),
+        {"offset": 0, "limit": 1},
+        None,
+    )  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["types_total"] >= 1
+    assert len(data["types"]) <= 1
+    assert data["types_offset"] == 0
+    if data["types"]:
+        assert "methods_offset" in data["types"][0]
+        assert "methods_total" in data["types"][0]
 
 
 def test_saz_capture(saz_file: Path) -> None:

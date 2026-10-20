@@ -16,6 +16,7 @@ from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .formats.axml import AxmlError, parse_axml
+from .paging import page_sequence
 from .registry import TargetSupport
 
 _PROVIDER = ProviderIdentity(id="android", name="REA-Python Android static", version="1")
@@ -47,7 +48,7 @@ class AndroidProvider(AnalysisProvider):
         parameters: dict[str, Any],
         profile: AnalysisProfile | None,
     ) -> Result[AnalysisExecution, AnalysisError]:
-        del parameters, profile
+        del profile
         if operation != "inspect_android_package":
             return err(
                 AnalysisInputError(
@@ -66,6 +67,24 @@ class AndroidProvider(AnalysisProvider):
             return err(AnalysisInputError(operation=operation, message=str(cause)))
 
         has_native = any(name.endswith(".so") for name in names)
+        offset = int(parameters.get("offset") or 0)
+        limit = int(parameters.get("limit") or 200)
+        permissions = manifest.get("permissions", []) if manifest else []
+        permission_page = page_sequence(permissions, offset=offset, limit=limit)
+        native_libraries = [name for name in names if name.endswith(".so")]
+        native_page = page_sequence(native_libraries, offset=offset, limit=limit)
+        raw_components = manifest.get("components", {}) if manifest else {}
+        components: dict[str, Any] = {}
+        component_totals: dict[str, int] = {}
+        component_next_offsets: dict[str, int | None] = {}
+        for key, value in raw_components.items():
+            if isinstance(value, list):
+                page = page_sequence(value, offset=offset, limit=limit)
+                components[key] = page["items"]
+                component_totals[key] = page["total"]
+                component_next_offsets[key] = page["next_offset"]
+            else:
+                components[key] = value
         return ok(
             AnalysisExecution(
                 result={
@@ -76,10 +95,18 @@ class AndroidProvider(AnalysisProvider):
                     "dex_files": dex_files,
                     "dex_versions": dex_versions,
                     "has_native_libraries": has_native,
-                    "native_libraries": [name for name in names if name.endswith(".so")],
+                    "native_libraries": native_page["items"],
+                    "native_libraries_total": native_page["total"],
+                    "native_libraries_offset": native_page["offset"],
+                    "native_libraries_next_offset": native_page["next_offset"],
                     "manifest_decoded": manifest is not None,
-                    "permissions": manifest.get("permissions", []) if manifest else [],
-                    "components": manifest.get("components", {}) if manifest else {},
+                    "permissions": permission_page["items"],
+                    "permissions_total": permission_page["total"],
+                    "permissions_offset": permission_page["offset"],
+                    "permissions_next_offset": permission_page["next_offset"],
+                    "components": components,
+                    "component_totals": component_totals,
+                    "component_next_offsets": component_next_offsets,
                     "application": manifest.get("application", {}) if manifest else {},
                 },
                 provider=_PROVIDER,

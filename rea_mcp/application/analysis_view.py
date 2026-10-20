@@ -118,7 +118,11 @@ def _tool_name(method: str, template: str) -> str:
 
 
 def environment_manifest(
-    record: dict[str, Any], *, include_query_names: bool = True
+    record: dict[str, Any],
+    *,
+    include_query_names: bool = True,
+    offset: int = 0,
+    limit: int = 64,
 ) -> dict[str, Any]:
     result = record.get("normalized_result") or {}
     requests = result.get("requests") or []
@@ -192,11 +196,18 @@ def environment_manifest(
         unknowns.append(
             "POST/PUT/PATCH body shapes are unknown because request bodies were not retained."
         )
+    total = len(tools)
+    offset = max(0, offset)
+    limit = min(1000, max(1, limit))
+    start = min(offset, total)
+    page = tools[start : start + limit]
     return {
         "kind": "environment-manifest",
         "parent_evidence_id": record.get("evidence_id"),
-        "tool_count": len(tools),
-        "tools": tools,
+        "tool_count": total,
+        "offset": start,
+        "next_offset": start + len(page) if start + len(page) < total else None,
+        "tools": page,
         "limitations": limitations,
         "unknowns": unknowns,
     }
@@ -264,6 +275,43 @@ def javascript_view(
     }
 
 
+_VIEWS = {
+    "summary",
+    "record",
+    "page",
+    "environment-manifest",
+    "javascript-facts",
+    "javascript",
+}
+
+
+def _guard_view(
+    value: dict[str, Any],
+    *,
+    view: str,
+    source: str | Path,
+    budget_bytes: int,
+    summary: dict[str, Any] | None = None,
+    evidence_id: str | None = None,
+) -> dict[str, Any]:
+    size = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    if size <= budget_bytes:
+        return value
+    return {
+        "kind": "truncated",
+        "truncated": True,
+        "view": view,
+        "source": str(source),
+        "budget_bytes": budget_bytes,
+        "result_bytes": size,
+        "evidence_reference": (
+            {"kind": "retained-evidence", "evidence_id": evidence_id} if evidence_id else None
+        ),
+        "summary": summary or {"keys": sorted(value.keys()) if isinstance(value, dict) else None},
+        "hint": "Use view=page with offset/limit, or the source file for the complete record.",
+    }
+
+
 def load_view(
     source: str | Path,
     view: str = "summary",
@@ -273,6 +321,7 @@ def load_view(
     paths: list[str] | None = None,
     property_keys: list[str] | None = None,
     evidence_id: str | None = None,
+    budget_bytes: int = 512 * 1024,
 ) -> Result[dict[str, Any], AnalysisError]:
     path = Path(source)
     if not path.is_file():
@@ -283,7 +332,41 @@ def load_view(
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as cause:
         return err(AnalysisInputError(operation="inspect_analysis_view", message=str(cause)))
-
+    if view not in _VIEWS:
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message=f"Unknown view {view!r}; choose one of {sorted(_VIEWS)}.",
+            )
+        )
+    if view == "summary":
+        if "records" in payload:
+            return ok(summarize_bundle(payload))
+        if "evidence_id" in payload:
+            return ok(summarize_record(payload))
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message="Source is neither an Evidence record nor a bundle",
+            )
+        )
+    if view == "page":
+        if "records" not in payload:
+            return err(
+                AnalysisInputError(
+                    operation="inspect_analysis_view",
+                    message="view=page requires an Evidence bundle (or use view=record).",
+                )
+            )
+        return ok(
+            _guard_view(
+                page_bundle(payload, offset, limit),
+                view=view,
+                source=path,
+                budget_bytes=budget_bytes,
+                summary=summarize_bundle(payload),
+            )
+        )
     if view in ("environment-manifest", "javascript-facts", "javascript"):
         record = _select_record(payload, view, evidence_id)
         if record is None:
@@ -294,28 +377,73 @@ def load_view(
                 )
             )
         if view == "environment-manifest":
-            return ok(environment_manifest(record))
-        if view == "javascript-facts":
-            return ok(
-                javascript_facts(
-                    record,
-                    paths=paths,
-                    property_keys=property_keys,
-                    offset=offset,
-                    limit=limit,
+            result = environment_manifest(record, offset=offset, limit=limit)
+            summary = {
+                "parent_evidence_id": result["parent_evidence_id"],
+                "tool_count": result["tool_count"],
+            }
+        elif view == "javascript-facts":
+            result = javascript_facts(
+                record,
+                paths=paths,
+                property_keys=property_keys,
+                offset=offset,
+                limit=limit,
+            )
+            summary = {
+                "parent_evidence_id": result["parent_evidence_id"],
+                "total": result["total"],
+            }
+        else:
+            result = javascript_view(record, paths=paths, offset=offset, limit=limit)
+            summary = {
+                "parent_evidence_id": result["parent_evidence_id"],
+                "edge_total": result["edge_total"],
+            }
+        return ok(
+            _guard_view(
+                result,
+                view=view,
+                source=path,
+                budget_bytes=budget_bytes,
+                summary=summary,
+                evidence_id=record.get("evidence_id"),
+            )
+        )
+    # view == "record"
+    if "records" in payload:
+        if not evidence_id:
+            return err(
+                AnalysisInputError(
+                    operation="inspect_analysis_view",
+                    message="view=record on a bundle requires evidence_id; use view=page for a list.",
                 )
             )
-        return ok(javascript_view(record, paths=paths, offset=offset, limit=limit))
-    if "records" in payload:
-        if view == "page":
-            return ok(page_bundle(payload, offset, limit))
-        return ok(summarize_bundle(payload) if view == "summary" else payload)
-    if "evidence_id" in payload:
-        return ok(summarize_record(payload) if view == "summary" else payload)
-    return err(
-        AnalysisInputError(
-            operation="inspect_analysis_view",
-            message="Source is neither an Evidence record nor a bundle",
+        record = _select_record(payload, "record", evidence_id)
+        if record is None:
+            return err(
+                AnalysisInputError(
+                    operation="inspect_analysis_view",
+                    message=f"Evidence {evidence_id} was not found in the bundle.",
+                )
+            )
+    elif "evidence_id" in payload:
+        record = payload
+    else:
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message="Source is neither an Evidence record nor a bundle",
+            )
+        )
+    return ok(
+        _guard_view(
+            record,
+            view=view,
+            source=path,
+            budget_bytes=budget_bytes,
+            summary=summarize_record(record),
+            evidence_id=record.get("evidence_id"),
         )
     )
 

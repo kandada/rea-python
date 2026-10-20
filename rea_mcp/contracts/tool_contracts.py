@@ -39,10 +39,33 @@ class SessionInput(_Input):
     pass
 
 
+class GetEvidenceBundleInput(_Input):
+    full: bool = Field(
+        default=False, description="Return the complete bundle instead of a summary."
+    )
+
+
 class AnalysisInput(_Input):
     path: str | None = Field(
         default=None, description="Optional target path; uses the open target otherwise."
     )
+
+
+class PagedAnalysisInput(AnalysisInput):
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=256, ge=1, le=1000)
+
+
+class ManagedMembersInput(PagedAnalysisInput):
+    method_offset: int = Field(default=0, ge=0)
+    method_limit: int = Field(default=64, ge=1, le=1000)
+
+
+class JavaScriptInput(PagedAnalysisInput):
+    module_offset: int = Field(default=0, ge=0)
+    module_limit: int = Field(default=500, ge=1, le=1000)
+    edge_offset: int = Field(default=0, ge=0)
+    edge_limit: int = Field(default=500, ge=1, le=1000)
 
 
 class SqliteInput(AnalysisInput):
@@ -159,6 +182,7 @@ class SearchInput(AnalysisInput):
 
 class DecompileInput(AnalysisInput):
     function: str = "main"
+    max_bytes: int = Field(default=64_000, ge=0, le=10_000_000)
 
 
 class XrefsInput(AnalysisInput):
@@ -203,6 +227,8 @@ class CaptureCdpInput(CdpEndpointInput):
 
 class AndroidClassInput(AnalysisInput):
     class_name: str = Field(min_length=1, description="Fully-qualified class name.")
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=500, ge=1, le=1000)
 
 
 class AndroidAppInfoInput(_Input):
@@ -254,6 +280,7 @@ class FirmwareExtractInput(AnalysisInput):
 
 class JebItemInput(AnalysisInput):
     item: str = Field(min_length=1)
+    max_bytes: int = Field(default=64_000, ge=0, le=10_000_000)
 
 
 class FridaSessionInput(_Input):
@@ -297,6 +324,7 @@ class VerifyUnknownInput(_Input):
 
 class BatchDecompileInput(_Input):
     functions: list[str] = Field(min_length=1)
+    max_bytes_per_function: int = Field(default=64_000, ge=0, le=10_000_000)
 
 
 class CallGraphInput(_Input):
@@ -335,6 +363,7 @@ class AndroidDeepInput(AnalysisInput):
     class_name: str | None = None
     method: str | None = None
     query: str | None = None
+    offset: int = Field(default=0, ge=0)
     limit: int = Field(default=200, ge=1, le=10_000)
 
 
@@ -435,7 +464,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract(
         "inspect_managed_members",
         "Managed assembly member names (types/methods) and counts.",
-        AnalysisInput,
+        ManagedMembersInput,
     ),
     _analysis_contract(
         "disassemble_managed_method",
@@ -443,7 +472,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         MethodInput,
     ),
     _analysis_contract(
-        "inspect_network_capture", "HAR/SAZ capture requests, hosts and status.", AnalysisInput
+        "inspect_network_capture",
+        "HAR/SAZ capture requests, hosts and status.",
+        PagedAnalysisInput,
     ),
     _analysis_contract(
         "inspect_harmony_package", "HarmonyOS HAP package facts and entry hashes.", AnalysisInput
@@ -451,7 +482,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract(
         "analyze_javascript_application",
         "JavaScript/Electron module graph and IPC boundaries.",
-        AnalysisInput,
+        JavaScriptInput,
     ),
     _analysis_contract(
         "inspect_keyed_archive", "NSKeyedArchiver class and object inventory.", AnalysisInput
@@ -483,12 +514,12 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract(
         "inspect_artifact",
         "File inventory and digests for zip/apk/asar/tar/directory.",
-        AnalysisInput,
+        PagedAnalysisInput,
     ),
     _analysis_contract(
         "inspect_android_package",
         "APK inventory, DEX facts and manifest package facts.",
-        AnalysisInput,
+        PagedAnalysisInput,
     ),
     _analysis_contract(
         "identify_flutter_build", "Flutter AOT snapshot fingerprint per ABI.", AnalysisInput
@@ -647,7 +678,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     ),
     _analysis_contract("decode_android_smali", "Full apktool smali inventory.", AnalysisInput),
     _analysis_contract(
-        "decompile_android_apk", "Decompile an APK to Java with JADX.", AnalysisInput
+        "decompile_android_apk", "Decompile an APK to Java with JADX.", PagedAnalysisInput
     ),
     _analysis_contract(
         "decompile_android_class", "Decompile one class with JADX.", AndroidClassInput
@@ -655,7 +686,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract(
         "decode_signal_recording", "Decode a logic-signal recording with sigrok.", AnalysisInput
     ),
-    _analysis_contract("kuna_decompile", "Decompile a function with Kuna.", FunctionInput),
+    _analysis_contract("kuna_decompile", "Decompile a function with Kuna.", DecompileInput),
     _analysis_contract(
         "ghidra_analyze", "Ghidra overview via pyhidra/pyghidra.", GhidraAnalyzeInput
     ),
@@ -1050,7 +1081,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract("procedure_callees", "Callees of a procedure.", NativeToolInput),
     _analysis_contract("procedure_callers", "Callers of a procedure.", NativeToolInput),
     _analysis_contract("procedure_info", "Procedure metadata.", NativeToolInput),
-    _analysis_contract("procedure_pseudo_code", "Pseudocode for a procedure.", NativeToolInput),
+    _analysis_contract("procedure_pseudo_code", "Pseudocode for a procedure.", DecompileInput),
     _analysis_contract("procedure_references", "Callers and callees.", NativeToolInput),
     _analysis_contract(
         "resolve_containing_procedure",
@@ -1131,8 +1162,8 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     ),
     ToolContract(
         name="get_evidence_bundle",
-        description="Return the session Evidence bundle.",
-        input_model=SessionInput,
+        description="Return a summary of the session Evidence bundle (or the full bundle).",
+        input_model=GetEvidenceBundleInput,
         operation=None,
         returns_evidence=False,
     ),

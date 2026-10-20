@@ -129,3 +129,53 @@ def test_view_selects_record_by_evidence_id(tmp_path: Path) -> None:
     assert selected.value["parent_evidence_id"] == "ev_har"
     missing = load_view(path, "environment-manifest", evidence_id="ev_missing")
     assert not missing.ok
+
+
+def test_unknown_view_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "har.json"
+    path.write_text(json.dumps(_har_record()), encoding="utf-8")
+    view = load_view(path, "everything")
+    assert not view.ok
+
+
+def test_record_view_requires_evidence_id_for_bundle(tmp_path: Path) -> None:
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps({"records": [_har_record()]}), encoding="utf-8")
+    assert not load_view(path, "record").ok
+    selected = load_view(path, "record", evidence_id="ev_har")
+    assert selected.ok
+    assert selected.value["evidence_id"] == "ev_har"
+
+
+def test_record_view_is_budget_guarded(tmp_path: Path) -> None:
+    path = tmp_path / "big.json"
+    path.write_text(
+        json.dumps(
+            {
+                "evidence_id": "ev_big",
+                "operation": "inspect_network_capture",
+                "normalized_result": {"blob": "x" * 5000},
+            }
+        ),
+        encoding="utf-8",
+    )
+    view = load_view(path, "record", budget_bytes=1024)
+    assert view.ok
+    assert view.value["truncated"] is True
+    assert view.value["evidence_reference"]["evidence_id"] == "ev_big"
+    assert view.value["summary"]["operation"] == "inspect_network_capture"
+
+
+def test_environment_manifest_paginates(tmp_path: Path) -> None:
+    path = tmp_path / "har.json"
+    path.write_text(json.dumps(_har_record()), encoding="utf-8")
+    first = load_view(path, "environment-manifest", offset=0, limit=1)
+    assert first.ok
+    assert first.value["tool_count"] == 2
+    assert len(first.value["tools"]) == 1
+    assert first.value["next_offset"] == 1
+    second = load_view(path, "environment-manifest", offset=1, limit=1)
+    assert second.ok
+    assert len(second.value["tools"]) == 1
+    assert second.value["next_offset"] is None
+    assert first.value["tools"][0]["name"] != second.value["tools"][0]["name"]

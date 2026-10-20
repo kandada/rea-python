@@ -30,6 +30,7 @@ from ..domain.result import Result, err, ok
 from ..process.supervision import ProcessResult, run_owned_process
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .external import ToolResolution, resolve_shell_command, resolve_tool
+from .paging import page_lines, page_sequence
 from .registry import TargetSupport
 
 
@@ -1378,23 +1379,41 @@ class JadxProvider(_CliEngine):
                             message=f"class {wanted} not found in decompiled output",
                         )
                     )
+                source = candidate.read_text(encoding="utf-8", errors="replace")
+                page = page_lines(
+                    source,
+                    offset=int(parameters.get("offset") or 0),
+                    limit=int(parameters.get("limit") or 500),
+                )
                 return ok(
                     AnalysisExecution(
                         result={
                             "class": wanted,
-                            "source": candidate.read_text(encoding="utf-8", errors="replace"),
+                            "line_count": page["line_total"],
+                            "source_bytes": len(source.encode("utf-8")),
+                            "source_offset": page["offset"],
+                            "next_offset": page["next_offset"],
+                            "source": page["text"],
                         },
                         provider=self.identity(),
                         limitations=("Decompilation follows the caller's JADX version.",),
                     )
                 )
+            page = page_sequence(
+                java_files,
+                offset=int(parameters.get("offset") or 0),
+                limit=int(parameters.get("limit") or 500),
+            )
             return ok(
                 AnalysisExecution(
                     result={
-                        "java_files": java_files[:2000],
+                        "java_files": page["items"],
+                        "java_files_total": page["total"],
+                        "java_files_offset": page["offset"],
+                        "next_offset": page["next_offset"],
                         "java_file_count": len(java_files),
                         "class_count": len(java_files),
-                        "truncated": len(java_files) > 2000,
+                        "truncated": page["next_offset"] is not None,
                         "stderr_tail": result.value.stderr[-2000:],
                     },
                     provider=self.identity(),

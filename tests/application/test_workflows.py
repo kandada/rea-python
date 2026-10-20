@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from rea_mcp.application.workflows import (
+    batch_decompile,
     compare_bundles,
     compare_process_captures,
     get_evidence_bundle,
@@ -21,7 +23,10 @@ def test_get_evidence_bundle(elf_file: Path) -> None:
     session = _session()
     session.open(str(elf_file))
     session.execute("inspect_binary_layout", {})
-    bundle = get_evidence_bundle(session)
+    summary = get_evidence_bundle(session)
+    assert summary["kind"] == "bundle"
+    assert summary["record_count"] == 1
+    bundle = get_evidence_bundle(session, full=True)
     assert bundle["records"]
     assert bundle["records"][0]["evidence_id"].startswith("ev_")
 
@@ -80,3 +85,23 @@ def test_compare_bundles_and_process_captures(tmp_path: Path) -> None:
     captures = compare_process_captures(str(capture_a), str(capture_b))
     assert captures["status"] == "changed"
     assert set(captures["changes"]) == {"exit_code", "stderr"}
+
+
+def test_batch_decompile_truncates_per_function() -> None:
+    class _Result:
+        ok = True
+        value = SimpleNamespace(normalized_result={"pseudocode": "x" * 1000})
+
+    class _Session:
+        def execute(self, operation: str, parameters: dict[str, object]) -> _Result:
+            return _Result()
+
+    capped = batch_decompile(_Session(), ["f"], max_bytes_per_function=100)
+    entry = capped["functions"][0]
+    assert entry["pseudocode"] == "x" * 100
+    assert entry["pseudocode_bytes"] == 1000
+    assert entry["pseudocode_truncated"] is True
+
+    full = batch_decompile(_Session(), ["f"], max_bytes_per_function=0)
+    assert full["functions"][0]["pseudocode"] == "x" * 1000
+    assert full["functions"][0]["pseudocode_truncated"] is False

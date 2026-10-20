@@ -67,7 +67,7 @@ class ArtifactProvider(AnalysisProvider):
         parameters: dict[str, Any],
         profile: AnalysisProfile | None,
     ) -> Result[AnalysisExecution, AnalysisError]:
-        del parameters, profile
+        del profile
         if operation != "inspect_artifact":
             return err(
                 AnalysisInputError(
@@ -91,7 +91,27 @@ class ArtifactProvider(AnalysisProvider):
         except (zipfile.BadZipFile, tarfile.TarError, ValueError) as cause:
             return err(AnalysisInputError(operation=operation, message=str(cause)))
 
-        return ok(AnalysisExecution(result=result, provider=_PROVIDER))
+        return ok(
+            AnalysisExecution(result=_paginate_entries(result, parameters), provider=_PROVIDER)
+        )
+
+
+def _paginate_entries(result: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+    entries = result.get("entries")
+    if not isinstance(entries, list):
+        return result
+    offset = max(0, int(parameters.get("offset") or 0))
+    limit = min(1000, max(1, int(parameters.get("limit") or 500)))
+    total = len(entries)
+    start = min(offset, total)
+    page = entries[start : start + limit]
+    result["entry_total"] = total
+    result["entry_count"] = total
+    result["entries_offset"] = start
+    result["returned_entry_count"] = len(page)
+    result["entries"] = page
+    result["next_offset"] = start + len(page) if start + len(page) < total else None
+    return result
 
 
 def _entry(name: str, size: int, digest: str | None = None) -> dict[str, Any]:

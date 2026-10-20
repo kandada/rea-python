@@ -63,6 +63,9 @@ _CDP_OPERATIONS = {
     "reconcile_javascript_runtime",
     "capture_electron_scenario",
 }
+_MAX_BODY_BYTES = 32_000
+_MAX_TOTAL_BODY_BYTES = 512_000
+_MAX_RETAINED_BODY_BYTES = 8 * 1024 * 1024
 _SCRIPT_RE = re.compile(r"""(?:import\s[^;]*?from\s*|require\s*\(\s*)["']([^"']+)["']""")
 
 
@@ -376,6 +379,7 @@ class WebRuntimeProvider(AnalysisProvider):
             )
         duration = min(float(parameters.get("duration") or 3.0), 300.0)
         capture_bodies = bool(parameters.get("capture_bodies"))
+        retain_bodies = bool(parameters.get("retain_bodies"))
         playwright, browser, page = self._new_page()
         console: list[Any] = []
         requests: list[Any] = []
@@ -408,6 +412,11 @@ class WebRuntimeProvider(AnalysisProvider):
 
         page.on("response", on_response)
         responses: list[dict[str, Any]] = []
+        retained_bodies: list[dict[str, Any]] = []
+        total_body_bytes = 0
+        retained_body_bytes = 0
+        bodies_truncated = False
+        retained_bodies_truncated = False
         try:
             page.goto(str(url), wait_until="domcontentloaded")
             page.wait_for_timeout(int(duration * 1000))
@@ -416,10 +425,32 @@ class WebRuntimeProvider(AnalysisProvider):
                 if capture_bodies:
                     try:
                         text = response.text()
-                        entry["body_truncated"] = len(text) > 200_000
-                        entry["body"] = text[:200_000]
                     except Exception as cause:
                         entry["body_error"] = str(cause)
+                    else:
+                        remaining = _MAX_TOTAL_BODY_BYTES - total_body_bytes
+                        limit = min(_MAX_BODY_BYTES, max(0, remaining))
+                        entry["body"] = text[:limit]
+                        entry["body_truncated"] = len(text) > limit
+                        total_body_bytes += len(entry["body"])
+                        if len(text) > limit:
+                            bodies_truncated = True
+                        if retain_bodies:
+                            capacity = _MAX_RETAINED_BODY_BYTES - retained_body_bytes
+                            if capacity <= 0:
+                                retained_bodies_truncated = True
+                            else:
+                                body = text[:capacity]
+                                retained_bodies.append(
+                                    {
+                                        "url": entry["url"],
+                                        "status": entry["status"],
+                                        "body": body,
+                                    }
+                                )
+                                retained_body_bytes += len(body)
+                                if len(text) > capacity:
+                                    retained_bodies_truncated = True
                 responses.append(entry)
         finally:
             browser.close()
@@ -435,6 +466,12 @@ class WebRuntimeProvider(AnalysisProvider):
                     "request_count": len(requests),
                     "response_count": len(responses),
                     "bodies_captured": capture_bodies,
+                    "body_bytes_total": total_body_bytes,
+                    "bodies_truncated": bodies_truncated,
+                    "retain_bodies": retain_bodies,
+                    "retained_body_bytes": retained_body_bytes,
+                    "retained_bodies_truncated": retained_bodies_truncated,
+                    **({"retained_bodies": retained_bodies} if retain_bodies else {}),
                 },
                 provider=self.identity(),
             )

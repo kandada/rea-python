@@ -121,3 +121,60 @@ def test_list_browser_targets_cdp(plain_file: Path) -> None:
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+@pytest.fixture
+def body_endpoint() -> str:
+    payload = b'{"data":"' + b"x" * 100_000 + b'"}'
+    page = b"<html><body>ok<script>fetch('/data').then(r=>r.text())</script></body></html>"
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            body = payload if self.path == "/data" else page
+            content_type = "application/json" if self.path == "/data" else "text/html"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            del args
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/"
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.real_engine
+@pytest.mark.skipif(not BROWSER_READY, reason="requires playwright + an installed browser")
+def test_observe_web_execution_caps_bodies(plain_file: Path, body_endpoint: str) -> None:
+    result = WebRuntimeProvider().analyze(
+        "observe_web_execution",
+        _target(plain_file),
+        {
+            "url": body_endpoint,
+            "duration": 2.0,
+            "capture_bodies": True,
+            "retain_bodies": True,
+        },
+        None,
+    )
+    assert result.ok
+    data = result.value.result
+    assert data["bodies_captured"] is True
+    assert data["body_bytes_total"] <= 512_000
+    assert data["bodies_truncated"] is True
+    bodies = [item for item in data["responses"] if item["url"].endswith("/data")]
+    assert bodies
+    assert bodies[0]["body_truncated"] is True
+    assert len(bodies[0]["body"]) <= 32_000
+    assert data["retained_body_bytes"] >= 100_000
+    assert data["retained_bodies_truncated"] is False
+    assert len(data["retained_bodies"][0]["body"]) >= 100_000

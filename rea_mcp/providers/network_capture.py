@@ -48,7 +48,7 @@ class NetworkCaptureProvider(AnalysisProvider):
         parameters: dict[str, Any],
         profile: AnalysisProfile | None,
     ) -> Result[AnalysisExecution, AnalysisError]:
-        del parameters, profile
+        del profile
         if operation != "inspect_network_capture":
             return err(
                 AnalysisInputError(
@@ -56,48 +56,72 @@ class NetworkCaptureProvider(AnalysisProvider):
                 )
             )
         if target.format == "har":
-            return self._har(target)
+            return self._har(target, parameters)
         if target.format == "saz":
-            return self._saz(target)
+            return self._saz(target, parameters)
         return err(AnalysisInputError(operation=operation, message="not a capture"))
 
-    def _har(self, target: BinaryTarget) -> Result[AnalysisExecution, AnalysisError]:
+    def _har(
+        self, target: BinaryTarget, parameters: dict[str, Any]
+    ) -> Result[AnalysisExecution, AnalysisError]:
         try:
             payload = json.loads(Path(target.path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as cause:
             return err(AnalysisInputError(operation="inspect_network_capture", message=str(cause)))
         entries = payload.get("log", {}).get("entries", [])
         requests, hosts, methods = _project_har_entries(entries)
+        page = _page(requests, parameters)
         return ok(
             AnalysisExecution(
                 result={
                     "capture_format": "har",
                     "entry_count": len(entries),
+                    "request_total": len(requests),
+                    "requests_offset": page["offset"],
+                    "next_offset": page["next_offset"],
                     "hosts": dict(hosts),
                     "methods": dict(methods),
-                    "requests": requests,
+                    "requests": page["items"],
                 },
                 provider=_PROVIDER,
             )
         )
 
-    def _saz(self, target: BinaryTarget) -> Result[AnalysisExecution, AnalysisError]:
+    def _saz(
+        self, target: BinaryTarget, parameters: dict[str, Any]
+    ) -> Result[AnalysisExecution, AnalysisError]:
         try:
             with zipfile.ZipFile(target.path) as archive:
                 names = archive.namelist()
                 sessions = _project_saz(archive, names)
         except (zipfile.BadZipFile, OSError) as cause:
             return err(AnalysisInputError(operation="inspect_network_capture", message=str(cause)))
+        page = _page(sessions, parameters)
         return ok(
             AnalysisExecution(
                 result={
                     "capture_format": "saz",
                     "session_count": len(sessions),
-                    "sessions": sessions,
+                    "sessions_offset": page["offset"],
+                    "next_offset": page["next_offset"],
+                    "sessions": page["items"],
                 },
                 provider=_PROVIDER,
             )
         )
+
+
+def _page(items: list[Any], parameters: dict[str, Any]) -> dict[str, Any]:
+    offset = max(0, int(parameters.get("offset") or 0))
+    limit = min(1000, max(1, int(parameters.get("limit") or 100)))
+    total = len(items)
+    start = min(offset, total)
+    page = items[start : start + limit]
+    return {
+        "items": page,
+        "offset": start,
+        "next_offset": start + len(page) if start + len(page) < total else None,
+    }
 
 
 def _project_har_entries(

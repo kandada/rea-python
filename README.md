@@ -32,11 +32,11 @@ You must legally obtain and be authorized to use commercial tools, including IDA
 
 rea-python is a provider-neutral reverse-engineering engine that returns traceable, evidence-carrying, reusable results, exposed through a shared CLI and MCP (Model Context Protocol) server. Its design follows the ideas behind [morluto/rea](https://github.com/morluto/rea), including the Evidence model: every result carries its identity, confidence, authority, limitations, and unresolved unknowns, so an AI agent (or a person) can reason honestly instead of trusting a bare answer.
 
-> Status: **alpha (0.1.6)** — full original CLI/MCP surface (169 tool names, 153 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
+> Status: **alpha (0.1.7)** — full original CLI/MCP surface (169 tool names, 153 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
 
 ## Upstream sync
 
-rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.6** it matches the **6.7.0** tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
+rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.7** it matches the **6.7.0** tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
 
 - Apktool localized string tables: repeatable `--locales`, `--locale`, `--string-tables-only`
 - JADX whole-operation deadline: `REA_JADX_OPERATION_TIMEOUT_MS`
@@ -122,6 +122,21 @@ rea mcp
 ```
 
 Output is JSON by default; a bare `--json` flag is accepted (before or after the command) for compatibility.
+
+## Readiness and client setup
+
+```bash
+rea-mcp doctor          # providers, external tools, effective timeouts
+rea-mcp setup           # print the MCP client registration plan
+rea-mcp setup --write <client-config.json>   # merge into an existing JSON/JSONC config
+rea-mcp setup --install-skill <dir>          # install the bundled agent skill
+```
+
+`doctor` lists each provider, its operations, and why an optional engine is unavailable. It does not install anything.
+
+## Response budgets
+
+MCP results are capped at 512 KiB by default (`REA_MCP_MAX_RESPONSE_BYTES`). Oversized analysis results are retained as Evidence and returned as a compact summary with an `evidence_reference`; use `evidence-export`, `inspect-analysis-view --view record --evidence-id <id>`, or `get-evidence-bundle --full` for the complete data. `inspect-analysis-view`, `inspect-artifact`, `inspect-managed-members`, `inspect-network-capture`, `inspect-android-package`, `inspect-android-class`, `inspect-android-method`, `decompile-android-apk`, `decompile-android-class`, and `analyze-javascript-application` page with `--offset`/`--limit` (JavaScript also has `--module-offset`/`--edge-offset`). Decompilers return a summary-sized preview by default; `--max-bytes` changes the limit and the full text remains in Evidence. `batch-decompile` caps pseudocode at 64 KiB per function (`--max-bytes-per-function 0` disables the cap). Captured web response bodies are capped at 32 KiB each and 512 KiB total; `observe-web-execution --bodies --retain-bodies` keeps the complete bodies in Evidence (up to 8 MiB) while returning bounded previews.
 
 ## Import names
 

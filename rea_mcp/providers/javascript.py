@@ -19,6 +19,7 @@ from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
+from .paging import page_sequence
 from .registry import TargetSupport
 
 _PROVIDER = ProviderIdentity(
@@ -63,7 +64,7 @@ class JavaScriptApplicationProvider(AnalysisProvider):
         parameters: dict[str, Any],
         profile: AnalysisProfile | None,
     ) -> Result[AnalysisExecution, AnalysisError]:
-        del parameters, profile
+        del profile
         if operation != "analyze_javascript_application":
             return err(
                 AnalysisInputError(
@@ -100,11 +101,25 @@ class JavaScriptApplicationProvider(AnalysisProvider):
             if "ipcRenderer" in text:
                 electron_flags.add("ipcRenderer")
 
+        module_page = page_sequence(
+            sorted(modules.items()),
+            offset=int(parameters.get("module_offset") or 0),
+            limit=int(parameters.get("module_limit") or 500),
+        )
+        edge_page = page_sequence(
+            edges,
+            offset=int(parameters.get("edge_offset") or 0),
+            limit=int(parameters.get("edge_limit") or 500),
+        )
         result: dict[str, Any] = {
             "module_count": len(modules),
-            "modules": modules,
+            "module_offset": module_page["offset"],
+            "next_module_offset": module_page["next_offset"],
+            "modules": dict(module_page["items"]),
             "edge_count": len(edges),
-            "edges": edges[:2000],
+            "edge_offset": edge_page["offset"],
+            "next_edge_offset": edge_page["next_offset"],
+            "edges": edge_page["items"],
             "electron": {
                 "is_electron": bool(
                     {"main", "preload", "renderer", "ipcMain", "ipcRenderer"} & electron_flags
