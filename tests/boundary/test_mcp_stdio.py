@@ -38,7 +38,7 @@ def test_stdio_server_lists_tools() -> None:
         "doctor",
     }
     assert required <= set(names)
-    assert len(names) == 232
+    assert len(names) == 265
 
 
 async def _list_tools_with_tiny_budget() -> str:

@@ -6,6 +6,7 @@ from ..application.session import BinarySession
 from ..config.settings import AppConfig
 from ..providers.android import AndroidProvider
 from ..providers.android_deep import AndroidDeepProvider
+from ..providers.apk_signature import ApkSignatureProvider
 from ..providers.apple import (
     AssetCatalogProvider,
     EntitlementsProvider,
@@ -15,11 +16,15 @@ from ..providers.apple import (
 from ..providers.artifact import ArtifactProvider
 from ..providers.base import AnalysisProvider
 from ..providers.binary_layout import BinaryLayoutProvider
+from ..providers.byte_tools import ByteEntropyProvider, NativeBytesProvider
 from ..providers.cdp import CdpProvider
 from ..providers.crash import CrashDumpProvider
 from ..providers.debug_sessions import DebugSessionProvider
+from ..providers.desktop_application import DesktopApplicationProvider
 from ..providers.dotnet import ManagedStaticProvider
+from ..providers.dotnet_decompiler import CSharpDecompilerProvider
 from ..providers.electron import ElectronFuseProvider
+from ..providers.elf_notes import ElfNotesProvider
 from ..providers.engines import (
     AdbProvider,
     ApktoolProvider,
@@ -27,13 +32,18 @@ from ..providers.engines import (
     KunaProvider,
     SignalProvider,
 )
+from ..providers.erlang_beam import ErlangBeamProvider
 from ..providers.evm import EvmInterfaceProvider
 from ..providers.firmware import FirmwareProvider
 from ..providers.flutter import FlutterBuildProvider
 from ..providers.go import GoBinaryProvider
+from ..providers.gpu_code_objects import GpuCodeObjectsProvider
 from ..providers.harmony import HarmonyProvider
 from ..providers.hopper import HopperProvider
+from ..providers.il2cpp_metadata import Il2CppMetadataProvider
 from ..providers.javascript import JavaScriptApplicationProvider
+from ..providers.model_artifact import ModelArtifactProvider
+from ..providers.native_exports import NativeExportsProvider
 from ..providers.network_capture import MitmproxyProvider, NetworkCaptureProvider
 from ..providers.objdump import ObjdumpProvider
 from ..providers.optional_engines import (
@@ -45,8 +55,10 @@ from ..providers.optional_engines import (
     RecordedCrashProvider,
 )
 from ..providers.pcap import PcapProvider
+from ..providers.pe_certificates import PeCertificatesProvider
 from ..providers.pe_resources import PeResourcesProvider
 from ..providers.plist import PlistProvider
+from ..providers.python_pyc import PythonPycProvider
 from ..providers.reference import ReferenceSourceProvider
 from ..providers.registry import AnalysisProviderRegistry
 from ..providers.rizin import RizinProvider
@@ -66,9 +78,22 @@ def build_providers() -> list[AnalysisProvider]:
 
     return [
         BinaryLayoutProvider(),
+        ApkSignatureProvider(),
+        DesktopApplicationProvider(),
+        GpuCodeObjectsProvider(),
+        Il2CppMetadataProvider(),
+        ByteEntropyProvider(),
+        NativeBytesProvider(),
+        ElfNotesProvider(),
+        ErlangBeamProvider(),
+        NativeExportsProvider(),
+        ModelArtifactProvider(),
+        PythonPycProvider(),
+        PeCertificatesProvider(),
         GoBinaryProvider(),
         RustBinaryProvider(),
         ManagedStaticProvider(),
+        CSharpDecompilerProvider(),
         SqliteDatabaseProvider(),
         ArtifactProvider(),
         AndroidProvider(),

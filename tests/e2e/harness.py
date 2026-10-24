@@ -62,6 +62,10 @@ class McpClient:
         listed = await self._session.list_tools()
         return sorted(tool.name for tool in listed.tools)
 
+    async def tool_models(self) -> list[Any]:
+        listed = await self._session.list_tools()
+        return list(listed.tools)
+
     async def call_raw(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         return await self._session.call_tool(name, arguments or {})
 

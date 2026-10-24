@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
 import tarfile
@@ -80,6 +81,8 @@ class ArtifactProvider(AnalysisProvider):
                 result = _inventory_directory(path)
             elif target.format == "asar":
                 result = _inventory_asar(path)
+            elif path.suffix.lower() == ".pck" or path.read_bytes()[:4] == b"GDPC":
+                result = _inventory_pck(path)
             elif target.format in ("zip", "apk") or zipfile.is_zipfile(path):
                 result = _inventory_zip(path)
             elif tarfile.is_tarfile(path):
@@ -112,6 +115,110 @@ def _paginate_entries(result: dict[str, Any], parameters: dict[str, Any]) -> dic
     result["entries"] = page
     result["next_offset"] = start + len(page) if start + len(page) < total else None
     return result
+
+
+def _inventory_pck(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    if len(data) < 40 or data[:4] != b"GDPC":
+        raise ValueError("Not a Godot PCK")
+    version = struct.unpack_from("<I", data, 4)[0]
+    if version not in (2, 3, 4):
+        raise ValueError(f"Unsupported Godot PCK version {version}")
+    flags = struct.unpack_from("<I", data, 20)[0]
+    file_base = struct.unpack_from("<Q", data, 24)[0]
+    directory = struct.unpack_from("<Q", data, 32)[0] if version >= 3 else 96
+    if directory + 4 > len(data):
+        raise ValueError("Godot PCK directory is outside the file")
+    count = struct.unpack_from("<I", data, directory)[0]
+    directory_status = "encrypted" if flags & 1 else "sparse-bundle" if flags & 4 else "available"
+    if directory_status != "available":
+        return {
+            "format": "godot-pck",
+            "pck": {
+                "format_version": version,
+                "engine_major": struct.unpack_from("<I", data, 8)[0],
+                "engine_minor": struct.unpack_from("<I", data, 12)[0],
+                "engine_patch": struct.unpack_from("<I", data, 16)[0],
+                "flags": flags,
+                "file_base": file_base,
+                "directory_start": directory,
+                "declared_file_count": count,
+                "directory_status": directory_status,
+            },
+            "entries": [],
+            "entry_count": 0,
+            "entry_total": count,
+            "returned_entry_count": 0,
+            "next_offset": None,
+            "limitations": [
+                "Godot PCK directory is encrypted; member identities and contents remain unknown."
+                if directory_status == "encrypted"
+                else "Godot PCK is a sparse bundle; external member bytes were not traversed."
+            ],
+        }
+    cursor = directory + 4
+    entries: list[dict[str, Any]] = []
+    declared_plaintext = 0
+    expansion_budget = max(256 * 1024 * 1024, 500 * len(data))
+    for _index in range(min(count, _MAX_ENTRIES)):
+        if cursor + 4 > len(data):
+            raise ValueError("truncated Godot PCK entry")
+        path_len = struct.unpack_from("<I", data, cursor)[0]
+        cursor += 4
+        if cursor + path_len + 8 + 8 + 16 + 4 > len(data):
+            raise ValueError("truncated Godot PCK entry")
+        raw_path = data[cursor : cursor + path_len]
+        cursor += path_len
+        offset, size = struct.unpack_from("<QQ", data, cursor)
+        cursor += 16
+        md5 = data[cursor : cursor + 16]
+        cursor += 16
+        entry_flags = struct.unpack_from("<I", data, cursor)[0]
+        cursor += 4
+        name = raw_path.rstrip(b"\x00").decode("utf-8", errors="replace")
+        absolute_offset = file_base + offset
+        encrypted = bool(entry_flags & 1)
+        content_sha = None
+        if not encrypted:
+            declared_plaintext += size
+            if declared_plaintext > expansion_budget:
+                raise ValueError("Godot PCK readable entries exceed the expansion budget")
+            if absolute_offset + size <= len(data):
+                content_sha = hashlib.sha256(
+                    data[absolute_offset : absolute_offset + size]
+                ).hexdigest()
+        entries.append(
+            {
+                "path": name[6:] if name.startswith("res://") else name,
+                "size": size,
+                "offset": absolute_offset,
+                "md5": None if md5 == b"\x00" * 16 else md5.hex(),
+                "sha256": content_sha,
+                "hash_status": "hashed" if content_sha else "unknown",
+                "flags": entry_flags,
+                "encrypted": encrypted,
+            }
+        )
+    return {
+        "format": "godot-pck",
+        "pck": {
+            "format_version": version,
+            "engine_major": struct.unpack_from("<I", data, 8)[0],
+            "engine_minor": struct.unpack_from("<I", data, 12)[0],
+            "engine_patch": struct.unpack_from("<I", data, 16)[0],
+            "flags": flags,
+            "file_base": file_base,
+            "directory_start": directory,
+            "declared_file_count": count,
+            "directory_status": directory_status,
+        },
+        "entries": entries,
+        "entry_count": len(entries),
+        "truncated": count > len(entries),
+        "declared_plaintext_bytes": declared_plaintext,
+        "expansion_budget_bytes": expansion_budget,
+        "encrypted_entry_count": sum(1 for entry in entries if entry["encrypted"]),
+    }
 
 
 def _entry(name: str, size: int, digest: str | None = None) -> dict[str, Any]:

@@ -179,3 +179,73 @@ def test_environment_manifest_paginates(tmp_path: Path) -> None:
     assert len(second.value["tools"]) == 1
     assert second.value["next_offset"] is None
     assert first.value["tools"][0]["name"] != second.value["tools"][0]["name"]
+
+
+def test_managed_member_view_pages_collections(tmp_path: Path) -> None:
+    record = {
+        "evidence_id": "ev_managed",
+        "operation": "inspect_managed_members",
+        "normalized_result": {
+            "types": [{"full_name": "Example.Outer"}],
+            "fields": [{"name": "Value", "constant": "literal"}],
+            "methods": [
+                {"name": "Run", "token": "0x06000001"},
+                {"name": "Stop", "token": "0x06000002"},
+            ],
+            "selection": {"type_names": ["Example.Outer"], "unmatched_type_names": []},
+            "coverage": {"state": "complete", "issues": []},
+            "metadata": {"status": "complete"},
+        },
+    }
+    path = tmp_path / "managed.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    view = load_view(path, "managed-members", collection="methods", offset=1, limit=1)
+    assert view.ok
+    data = view.value
+    assert data["kind"] == "managed-members"
+    assert data["collection"] == "methods"
+    assert data["total"] == 2
+    assert data["offset"] == 1
+    assert data["next_offset"] is None
+    assert data["rows"][0]["name"] == "Stop"
+    assert data["selection"]["type_names"] == ["Example.Outer"]
+    assert not load_view(path, "managed-members", collection="missing").ok
+
+
+def test_managed_view_requires_collection(tmp_path: Path) -> None:
+    path = tmp_path / "managed.json"
+    path.write_text(
+        json.dumps(
+            {
+                "evidence_id": "ev_managed",
+                "operation": "inspect_managed_members",
+                "normalized_result": {"methods": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert not load_view(path, "managed-members").ok
+
+
+def test_desktop_application_view_pages(tmp_path: Path) -> None:
+    path = tmp_path / "desktop.json"
+    path.write_text(
+        json.dumps(
+            {
+                "evidence_id": "ev_desktop",
+                "operation": "inspect_desktop_application",
+                "normalized_result": {
+                    "files": [{"path": "a.dll", "size": 1}, {"path": "b.dll", "size": 2}],
+                    "candidates": [{"path": "a.dll", "kind": "dotnet"}],
+                    "components": [],
+                    "next_probes": [{"operation": "inspect_managed_artifact"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    view = load_view(path, "desktop-application", collection="files", offset=1, limit=1)
+    assert view.ok
+    assert view.value["kind"] == "desktop-application"
+    assert view.value["total"] == 2
+    assert view.value["rows"][0]["path"] == "b.dll"

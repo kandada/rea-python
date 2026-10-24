@@ -31,15 +31,21 @@ def _error_payload(error: Any) -> str:
     return json.dumps(project_analysis_error(error), ensure_ascii=False)
 
 
-def _open_if_needed(session: BinarySession, path: str | None) -> None:
+def _open_if_needed(
+    session: BinarySession, path: str | None, format_hint: str | None = None
+) -> None:
     active = session.active_target()
     if path is None:
         if active is None:
             raise ToolError(_error_payload(NoBinaryOpenError()))
         return
-    if active is not None and Path(active.path) == Path(path):
+    if (
+        active is not None
+        and Path(active.path) == Path(path)
+        and (format_hint is None or active.format == format_hint)
+    ):
         return
-    opened = session.open(path)
+    opened = session.open(path, format_hint=format_hint)  # type: ignore[arg-type]
     if not opened.ok:
         raise ToolError(_error_payload(opened.error))
 
@@ -145,9 +151,13 @@ def _enforce_budget(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _analysis(
-    session: BinarySession, operation: str, path: str | None, parameters: dict[str, Any]
+    session: BinarySession,
+    operation: str,
+    path: str | None,
+    parameters: dict[str, Any],
+    format_hint: str | None = None,
 ) -> dict[str, Any]:
-    _open_if_needed(session, path)
+    _open_if_needed(session, path, format_hint)
     result = session.execute(operation, parameters)
     if not result.ok:
         raise ToolError(_error_payload(result.error))
@@ -336,6 +346,64 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     def inspect_binary_layout(path: str | None = None) -> dict[str, Any]:
         return _analysis(session, "inspect_binary_layout", path, {})
 
+    @server.tool(name="inspect_byte_entropy", description="File and block byte entropy.")
+    def inspect_byte_entropy(
+        path: str | None = None,
+        block_size: int = 4096,
+        offset: int = 0,
+        length: int | None = None,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_byte_entropy",
+            path,
+            {"block_size": block_size, "offset": offset, "length": length},
+        )
+
+    @server.tool(name="read_bytes", description="Read file-backed bytes at an address.")
+    def read_bytes(address: str, length: int = 256, path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "read_bytes", path, {"address": address, "length": length})
+
+    @server.tool(name="search_bytes", description="Search file-backed bytes with wildcards.")
+    def search_bytes(
+        pattern: str,
+        mask: str | None = None,
+        start: int = 0,
+        end: int = 0,
+        limit: int = 100,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "search_bytes",
+            path,
+            {"pattern": pattern, "mask": mask, "start": start, "end": end, "limit": limit},
+        )
+
+    @server.tool(name="address_to_file_offset", description="Map an address to a file offset.")
+    def address_to_file_offset(address: str, path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "address_to_file_offset", path, {"address": address})
+
+    @server.tool(name="inspect_apk_signature", description="APK v1/v2/v3 signature declarations.")
+    def inspect_apk_signature(path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "inspect_apk_signature", path, {})
+
+    @server.tool(
+        name="inspect_desktop_application", description="Desktop application directory triage."
+    )
+    def inspect_desktop_application(
+        path: str | None = None, detail: str = "complete"
+    ) -> dict[str, Any]:
+        return _analysis(session, "inspect_desktop_application", path, {"detail": detail})
+
+    @server.tool(name="inspect_gpu_code_objects", description="Static GPU code-object discovery.")
+    def inspect_gpu_code_objects(path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "inspect_gpu_code_objects", path, {})
+
+    @server.tool(name="inspect_elf_notes", description="ELF PT_NOTE and SHT_NOTE tables.")
+    def inspect_elf_notes(path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "inspect_elf_notes", path, {})
+
     @server.tool(name="inspect_go_binary", description="Embedded Go metadata.")
     def inspect_go_binary(path: str | None = None) -> dict[str, Any]:
         return _analysis(session, "inspect_go_binary", path, {})
@@ -345,8 +413,10 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "inspect_rust_binary", path, {})
 
     @server.tool(name="inspect_managed_artifact", description="Static .NET/CLI metadata.")
-    def inspect_managed_artifact(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "inspect_managed_artifact", path, {})
+    def inspect_managed_artifact(
+        path: str | None = None, detail: str = "complete"
+    ) -> dict[str, Any]:
+        return _analysis(session, "inspect_managed_artifact", path, {"detail": detail})
 
     @server.tool(name="inspect_sqlite_database", description="SQLite schema and bounded rows.")
     def inspect_sqlite_database(
@@ -408,6 +478,7 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         paths: list[str] | None = None,
         property_keys: list[str] | None = None,
         evidence_id: str | None = None,
+        collection: str | None = None,
     ) -> dict[str, Any]:
         projected = load_view(
             source,
@@ -417,11 +488,138 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
             paths=paths,
             property_keys=property_keys,
             evidence_id=evidence_id,
+            collection=collection,
             budget_bytes=AppConfig().mcp_max_response_bytes,
         )
         if not projected.ok:
             raise ToolError(_error_payload(projected.error))
         return projected.value
+
+    @server.tool(
+        name="inspect_managed_native_boundaries",
+        description="Inspect managed P/Invoke and native implementation declarations.",
+    )
+    def inspect_managed_native_boundaries(path: str) -> dict[str, Any]:
+        from ..application import cli_compat
+
+        try:
+            return cli_compat.inspect_managed_native_boundaries(path)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="inspect_managed_native_boundaries", message=str(cause)
+                    )
+                )
+            ) from cause
+
+    @server.tool(
+        name="verify_managed_native_boundaries",
+        description="Verify declared managed native boundaries.",
+    )
+    def verify_managed_native_boundaries(managed: str, boundaries: list[str]) -> dict[str, Any]:
+        from ..application import cli_compat
+
+        try:
+            return cli_compat.verify_managed_native_boundaries(managed, boundaries)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="verify_managed_native_boundaries", message=str(cause)
+                    )
+                )
+            ) from cause
+
+    @server.tool(
+        name="import_managed_reconstruction",
+        description="Import a managed reconstruction ledger.",
+    )
+    def import_managed_reconstruction(path: str) -> dict[str, Any]:
+        from ..application import cli_compat
+
+        try:
+            return cli_compat.import_managed_reconstruction(path)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="import_managed_reconstruction", message=str(cause)
+                    )
+                )
+            ) from cause
+
+    @server.tool(
+        name="project_android_application_graph",
+        description="Project an Android application graph.",
+    )
+    def project_android_application_graph(path: str) -> dict[str, Any]:
+        from ..application import cli_compat
+
+        try:
+            return cli_compat.project_android_application_graph(path)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="project_android_application_graph", message=str(cause)
+                    )
+                )
+            ) from cause
+
+    @server.tool(
+        name="project_apple_application_graph",
+        description="Project an Apple application graph.",
+    )
+    def project_apple_application_graph(path: str) -> dict[str, Any]:
+        from ..application import cli_compat
+
+        try:
+            return cli_compat.project_apple_application_graph(path)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="project_apple_application_graph", message=str(cause)
+                    )
+                )
+            ) from cause
+
+    @server.tool(
+        name="project_harmony_application_graph",
+        description="Project a Harmony application graph.",
+    )
+    def project_harmony_application_graph(path: str) -> dict[str, Any]:
+        from ..application import cli_compat
+
+        try:
+            return cli_compat.project_harmony_application_graph(path)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="project_harmony_application_graph", message=str(cause)
+                    )
+                )
+            ) from cause
+
+    @server.tool(
+        name="project_managed_application_graph",
+        description="Project a managed application graph.",
+    )
+    def project_managed_application_graph(path: str) -> dict[str, Any]:
+        from ..application import cli_compat
+
+        try:
+            return cli_compat.project_managed_application_graph(path)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="project_managed_application_graph", message=str(cause)
+                    )
+                )
+            ) from cause
 
     @server.tool(name="inspect_with_objdump", description="File and section headers via objdump.")
     def inspect_with_objdump(path: str | None = None) -> dict[str, Any]:
@@ -453,6 +651,31 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     ) -> dict[str, Any]:
         return _analysis(session, "function", path, {"function": function, "limit": limit})
 
+    @server.tool(
+        name="decompile_managed_csharp",
+        description="Optional C# decompilation through caller-supplied ilspycmd.",
+    )
+    def decompile_managed_csharp(
+        path: str | None = None,
+        type: str = "",
+        method: str | None = None,
+        offset: int = 0,
+        limit: int = 500,
+        max_bytes: int = 64_000,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "decompile_managed_csharp",
+            path,
+            {
+                "type": type,
+                "method": method,
+                "offset": offset,
+                "limit": limit,
+                "max_bytes": max_bytes,
+            },
+        )
+
     @server.tool(name="decompile", description="Pseudocode for a function.")
     def decompile(
         path: str | None = None, function: str = "main", max_bytes: int = 64_000
@@ -465,9 +688,39 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="xrefs", description="Cross-references to an address or function.")
     def xrefs(
-        path: str | None = None, address: str | None = None, function: str = "main"
+        path: str | None = None,
+        address: str | None = None,
+        function: str = "main",
+        raw_image: bool = False,
+        target: str | None = None,
+        base: str | None = None,
+        entry: str | None = None,
     ) -> dict[str, Any]:
-        return _analysis(session, "xrefs", path, {"address": address, "function": function})
+        return _analysis(
+            session,
+            "xrefs",
+            path,
+            {
+                "address": address,
+                "function": function,
+                "target": target,
+                "base": base,
+                "entry": entry,
+            },
+            format_hint="raw-binary" if raw_image else None,
+        )
+
+    @server.tool(name="inspect_python_pyc", description="CPython .pyc header and code objects.")
+    def inspect_python_pyc(path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "inspect_python_pyc", path, {})
+
+    @server.tool(name="inspect_model_artifact", description="GGUF/safetensors header inventory.")
+    def inspect_model_artifact(path: str | None = None, hash: str = "header") -> dict[str, Any]:
+        return _analysis(session, "inspect_model_artifact", path, {"hash": hash})
+
+    @server.tool(name="inspect_erlang_beam", description="Erlang BEAM IFF chunks and atoms.")
+    def inspect_erlang_beam(path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "inspect_erlang_beam", path, {})
 
     @server.tool(name="inspect_wasm_artifact", description="WASM validation, sections and WAT.")
     def inspect_wasm_artifact(path: str | None = None) -> dict[str, Any]:
@@ -507,8 +760,8 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return captured.value
 
     @server.tool(name="doctor", description="Report provider and external-tool readiness.")
-    def doctor() -> dict[str, Any]:
-        return doctor_report(build_providers())
+    def doctor(required: list[str] | None = None, profile: str | None = None) -> dict[str, Any]:
+        return doctor_report(build_providers(), required=required, profile=profile)
 
     @server.tool(name="inspect_managed_members", description="Managed member names and counts.")
     def inspect_managed_members(
@@ -517,8 +770,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         limit: int = 256,
         method_offset: int = 0,
         method_limit: int = 64,
+        type_names: list[str] | None = None,
+        detail: str = "complete",
+        include_bodies: bool | None = None,
     ) -> dict[str, Any]:
-        return _analysis(
+        payload = _analysis(
             session,
             "inspect_managed_members",
             path,
@@ -527,17 +783,42 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
                 "limit": limit,
                 "method_offset": method_offset,
                 "method_limit": method_limit,
+                "type_names": type_names,
+                "detail": "complete",
+                "include_bodies": include_bodies,
             },
         )
+        if detail == "summary":
+            from ..providers.formats.managed_inspection import summarize_managed_inspection
+
+            summary = summarize_managed_inspection(payload.get("normalized_result") or {})
+            summary["evidence_id"] = payload.get("evidence_id")
+            summary["parent_evidence_id"] = payload.get("evidence_id")
+            return summary
+        return payload
 
     @server.tool(
         name="disassemble_managed_method", description="Disassemble a managed method's IL."
     )
     def disassemble_managed_method(
-        path: str | None = None, method: str = "", type: str | None = None
+        path: str | None = None,
+        method: str = "",
+        type: str | None = None,
+        token: str | None = None,
+        rva: str | int | None = None,
+        signature: str | None = None,
     ) -> dict[str, Any]:
         return _analysis(
-            session, "disassemble_managed_method", path, {"method": method, "type": type}
+            session,
+            "disassemble_managed_method",
+            path,
+            {
+                "method": method,
+                "type": type,
+                "token": token,
+                "rva": rva,
+                "signature": signature,
+            },
         )
 
     @server.tool(name="inspect_network_capture", description="HAR/SAZ capture projection.")
@@ -575,6 +856,73 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     @server.tool(name="inspect_keyed_archive", description="NSKeyedArchiver inventory.")
     def inspect_keyed_archive(path: str | None = None) -> dict[str, Any]:
         return _analysis(session, "inspect_keyed_archive", path, {})
+
+    @server.tool(name="inspect_pe_certificates", description="PE Authenticode certificate table.")
+    def inspect_pe_certificates(path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "inspect_pe_certificates", path, {})
+
+    @server.tool(name="inspect_native_exports", description="PE/ELF export tables.")
+    def inspect_native_exports(path: str | None = None) -> dict[str, Any]:
+        return _analysis(session, "inspect_native_exports", path, {})
+
+    @server.tool(
+        name="inspect_javascript_webmcp",
+        description="Static JavaScript WebMCP declaration candidates.",
+    )
+    def inspect_javascript_webmcp(
+        path: str | None = None, offset: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_javascript_webmcp",
+            path,
+            {"offset": offset, "limit": limit},
+        )
+
+    @server.tool(
+        name="inspect_javascript_source_maps",
+        description="Static JavaScript source-map inventory.",
+    )
+    def inspect_javascript_source_maps(
+        path: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+        line: int | None = None,
+        column: int | None = None,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_javascript_source_maps",
+            path,
+            {"offset": offset, "limit": limit, "line": line, "column": column},
+        )
+
+    @server.tool(
+        name="inspect_javascript_routes", description="Static JavaScript route candidates."
+    )
+    def inspect_javascript_routes(
+        path: str | None = None, offset: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_javascript_routes",
+            path,
+            {"offset": offset, "limit": limit},
+        )
+
+    @server.tool(
+        name="inspect_javascript_dataflow",
+        description="Static JavaScript storage/DOM source-to-sink flows.",
+    )
+    def inspect_javascript_dataflow(
+        path: str | None = None, offset: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_javascript_dataflow",
+            path,
+            {"offset": offset, "limit": limit},
+        )
 
     @server.tool(name="inspect_pe_resources", description="PE resource types and counts.")
     def inspect_pe_resources(path: str | None = None) -> dict[str, Any]:
@@ -776,6 +1124,120 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
             raise ToolError(_error_payload(compared.error))
         return compared.value
 
+    @server.tool(
+        name="compare_javascript_export_shapes",
+        description="Compare static JavaScript module/export shape evidence.",
+    )
+    def compare_javascript_export_shapes(
+        left: str, right: str, module: str, export_name: str
+    ) -> dict[str, Any]:
+        from ..application.application_graph import compare_javascript_export_shapes as _compare
+
+        try:
+            return _compare(left, right, module, export_name)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(
+                        operation="compare_javascript_export_shapes", message=str(cause)
+                    )
+                )
+            ) from cause
+
+    @server.tool(
+        name="compare_application_versions",
+        description="Compare two static JavaScript application graphs.",
+    )
+    def compare_application_versions(left: str, right: str) -> dict[str, Any]:
+        from ..application.application_graph import compare_application_versions as _compare
+
+        try:
+            return _compare(left, right)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(operation="compare_application_versions", message=str(cause))
+                )
+            ) from cause
+
+    @server.tool(
+        name="compare_source_to_bundle",
+        description="Compare source and bundled application graphs.",
+    )
+    def compare_source_to_bundle(source: str, bundle: str) -> dict[str, Any]:
+        from ..application.application_graph import compare_source_to_bundle as _compare
+
+        try:
+            return _compare(source, bundle)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(operation="compare_source_to_bundle", message=str(cause))
+                )
+            ) from cause
+
+    @server.tool(
+        name="trace_application_feature",
+        description="Trace a feature through an application graph.",
+    )
+    def trace_application_feature(path: str, feature: str) -> dict[str, Any]:
+        from ..application.application_graph import trace_application_feature as _trace
+
+        try:
+            return _trace(path, feature)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(operation="trace_application_feature", message=str(cause))
+                )
+            ) from cause
+
+    @server.tool(
+        name="trace_javascript_semantics",
+        description="Trace static JavaScript module semantics.",
+    )
+    def trace_javascript_semantics(path: str, node: str) -> dict[str, Any]:
+        from ..application.application_graph import trace_javascript_semantics as _trace
+
+        try:
+            return _trace(path, node)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(operation="trace_javascript_semantics", message=str(cause))
+                )
+            ) from cause
+
+    @server.tool(name="match_native_functions", description="Match native export names.")
+    def match_native_functions(
+        left: str, right: str, query: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        from ..application.native_matching import match_native_functions as _match
+
+        try:
+            return _match(left, right, query, limit)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(operation="match_native_functions", message=str(cause))
+                )
+            ) from cause
+
+    @server.tool(
+        name="compare_wasm_interfaces", description="Compare WASM import/export declarations."
+    )
+    def compare_wasm_interfaces(left: str, right: str, selection: str = "both") -> dict[str, Any]:
+        from ..application.wasm_compare import compare_wasm_interfaces as _compare
+
+        try:
+            return _compare(left, right, selection)
+        except Exception as cause:
+            raise ToolError(
+                _error_payload(
+                    AnalysisInputError(operation="compare_wasm_interfaces", message=str(cause))
+                )
+            ) from cause
+
     @server.tool(name="compare_managed_members", description="Compare managed assembly members.")
     def compare_managed_members(left: str, right: str) -> dict[str, Any]:
         from ..providers.dotnet import compare_managed_members as _compare
@@ -875,10 +1337,26 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="kuna_decompile", description="Decompile a function with Kuna.")
     def kuna_decompile(
-        path: str | None = None, function: str = "main", max_bytes: int = 64_000
+        path: str | None = None,
+        function: str = "main",
+        max_bytes: int = 64_000,
+        raw_image: bool = False,
+        target: str | None = None,
+        base: str | None = None,
+        entry: str | None = None,
     ) -> dict[str, Any]:
         return _analysis(
-            session, "kuna_decompile", path, {"function": function, "max_bytes": max_bytes}
+            session,
+            "kuna_decompile",
+            path,
+            {
+                "function": function,
+                "max_bytes": max_bytes,
+                "target": target,
+                "base": base,
+                "entry": entry,
+            },
+            format_hint="raw-binary" if raw_image else None,
         )
 
     @server.tool(name="ghidra_analyze", description="Ghidra overview via pyhidra/pyghidra.")
@@ -1242,16 +1720,42 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "list_segments", path, {"limit": limit})
 
     @server.tool(name="list_strings", description="List strings.")
-    def list_strings(limit: int = 500, path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "list_strings", path, {"limit": limit})
+    def list_strings(
+        limit: int = 500,
+        path: str | None = None,
+        raw_image: bool = False,
+        target: str | None = None,
+        base: str | None = None,
+        entry: str | None = None,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "list_strings",
+            path,
+            {"limit": limit, "target": target, "base": base, "entry": entry},
+            format_hint="raw-binary" if raw_image else None,
+        )
 
     @server.tool(name="list_names", description="List names/flags.")
     def list_names(limit: int = 500, path: str | None = None) -> dict[str, Any]:
         return _analysis(session, "list_names", path, {"limit": limit})
 
     @server.tool(name="list_procedures", description="List procedures.")
-    def list_procedures(limit: int = 500, path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "list_procedures", path, {"limit": limit})
+    def list_procedures(
+        limit: int = 500,
+        path: str | None = None,
+        raw_image: bool = False,
+        target: str | None = None,
+        base: str | None = None,
+        entry: str | None = None,
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "list_procedures",
+            path,
+            {"limit": limit, "target": target, "base": base, "entry": entry},
+            format_hint="raw-binary" if raw_image else None,
+        )
 
     @server.tool(name="list_bookmarks", description="List bookmarks.")
     def list_bookmarks(path: str | None = None) -> dict[str, Any]:
@@ -1661,10 +2165,10 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(
         name="inspect_web_event_listeners",
-        description="Inspect inline handlers and addEventListener use.",
+        description="Inspect inline handlers and native listener source locations.",
     )
-    def inspect_web_event_listeners(url: str) -> dict[str, Any]:
-        return runtime("inspect_web_event_listeners", url, {"url": url})
+    def inspect_web_event_listeners(url: str, selector: str | None = None) -> dict[str, Any]:
+        return runtime("inspect_web_event_listeners", url, {"url": url, "selector": selector})
 
     @server.tool(name="observe_web_execution", description="Observe console output and requests.")
     def observe_web_execution(
@@ -1706,9 +2210,27 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
 
     @server.tool(name="capture_electron_scenario", description="Run an Electron/CDP scenario.")
     def capture_electron_scenario(
-        endpoint: str | None = None, steps: list[dict[str, Any]] | None = None
+        endpoint: str | None = None,
+        steps: list[dict[str, Any]] | None = None,
+        app: str | None = None,
+        executable: str | None = None,
+        port: int = 0,
+        launch_args: list[str] | None = None,
+        launch_timeout: float = 20.0,
     ) -> dict[str, Any]:
-        return runtime("capture_electron_scenario", "cdp", {"endpoint": endpoint, "steps": steps})
+        return runtime(
+            "capture_electron_scenario",
+            "cdp",
+            {
+                "endpoint": endpoint,
+                "steps": steps,
+                "app": app,
+                "executable": executable,
+                "port": port,
+                "launch_args": launch_args,
+                "launch_timeout": launch_timeout,
+            },
+        )
 
     @server.tool(name="inspect_electron_page", description="Inspect an Electron page target.")
     def inspect_electron_page(endpoint: str | None = None) -> dict[str, Any]:
@@ -1755,6 +2277,19 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     @server.tool(name="discover_webmcp_tools", description="Discover WebMCP declarations.")
     def discover_webmcp_tools(url: str) -> dict[str, Any]:
         return runtime("discover_webmcp_tools", url, {"url": url})
+
+    @server.tool(
+        name="invoke_webmcp_tool",
+        description="Explicitly invoke a registered WebMCP tool.",
+    )
+    def invoke_webmcp_tool(
+        url: str, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return runtime(
+            "invoke_webmcp_tool",
+            url,
+            {"url": url, "name": name, "arguments": arguments or {}},
+        )
 
     @server.tool(name="trace_native_ui_action", description="Trace a native UI action.")
     def trace_native_ui_action(
@@ -1844,4 +2379,36 @@ def run_mcp_server(session: BinarySession, config: AppConfig | None = None) -> N
     )
 
 
-__all__ = ["build_mcp_server", "run_mcp_server"]
+def run_mcp_http_server(
+    session: BinarySession,
+    config: AppConfig | None = None,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    path: str = "/mcp",
+) -> None:
+    """Run the MCP server over the opt-in streamable HTTP transport."""
+
+    config = config or AppConfig()
+    server = build_mcp_server(session, config)
+    server.settings.host = host
+    server.settings.port = port
+    server.settings.streamable_http_path = path
+    server.settings.json_response = True
+    security = server.settings.transport_security
+    if security is not None and host not in ("127.0.0.1", "localhost", "::1"):
+        security.allowed_hosts = [f"{host}:*", "*"]
+    from .transport import HttpBudgetMiddleware
+
+    app = server.streamable_http_app()
+    app.add_middleware(
+        HttpBudgetMiddleware,
+        budget_bytes=config.mcp_max_response_bytes,
+        retain=session.retain_payload,
+    )
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port)
+
+
+__all__ = ["build_mcp_server", "run_mcp_http_server", "run_mcp_server"]

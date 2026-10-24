@@ -180,3 +180,148 @@ async def run_stdio_server(
 
 
 __all__ = ["TransportInterceptors", "run_stdio_server"]
+
+
+class HttpBudgetMiddleware:
+    """Enforce the stdio byte budget on JSON streamable-HTTP responses.
+
+    Streaming SSE responses are left to the tool-layer guards; the HTTP
+    transport is opt-in and the default JSON mode covers ordinary calls.
+    """
+
+    def __init__(
+        self, app: Any, *, budget_bytes: int, retain: Callable[[str, dict[str, Any]], str]
+    ) -> None:
+        self.app = app
+        self.budget_bytes = budget_bytes
+        self.retain = retain
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+        json_response = False
+        sse = False
+        status = 0
+        headers: list[tuple[bytes, bytes]] = []
+        body_parts: list[bytes] = []
+        sse_buffer = b""
+
+        async def capture(message: Any) -> None:
+            nonlocal started, json_response, sse, status, headers, sse_buffer
+            if message["type"] == "http.response.start":
+                started = True
+                status = int(message["status"])
+                headers = list(message.get("headers") or [])
+                content_type = dict(headers).get(b"content-type", b"").decode("latin-1").lower()
+                json_response = content_type.startswith("application/json")
+                sse = content_type.startswith("text/event-stream")
+                if not json_response:
+                    await send(message)
+                return
+            if message["type"] == "http.response.body":
+                if json_response:
+                    body_parts.append(bytes(message.get("body", b"")))
+                elif sse:
+                    chunk = bytes(message.get("body", b""))
+                    sse_buffer += chunk
+                    while b"\n" in sse_buffer:
+                        line, sse_buffer = sse_buffer.split(b"\n", 1)
+                        await send(
+                            {
+                                "type": "http.response.body",
+                                "body": self._sse_line(line) + b"\n",
+                                "more_body": True,
+                            }
+                        )
+                else:
+                    await send(message)
+
+        await self.app(scope, receive, capture)
+        if sse:
+            if sse_buffer:
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": self._sse_line(sse_buffer),
+                        "more_body": False,
+                    }
+                )
+            else:
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        if not started or not json_response:
+            return
+        body = b"".join(body_parts)
+        if len(body) > self.budget_bytes:
+            try:
+                payload = json.loads(body)
+            except (ValueError, UnicodeDecodeError):
+                payload = None
+            if isinstance(payload, dict) and "id" in payload:
+                evidence_id = self.retain("mcp-http", _as_payload(payload.get("result")))
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "error": {
+                        "code": -32001,
+                        "message": "The result exceeds the MCP response budget.",
+                        "data": {
+                            "code": "RESOURCE_CONSTRAINT",
+                            "tag": "AnalysisResourceConstraintError",
+                            "resource": "transport",
+                            "result_budget_bytes": self.budget_bytes,
+                            "response_bytes_at_least": len(body),
+                            "evidence_reference": {
+                                "kind": "retained-evidence",
+                                "evidence_id": evidence_id,
+                            },
+                        },
+                    },
+                }
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = [
+            (key, value)
+            for key, value in headers
+            if key.lower() not in (b"content-length", b"transfer-encoding")
+        ]
+        headers.append((b"content-length", str(len(body)).encode("ascii")))
+        await send({"type": "http.response.start", "status": status, "headers": headers})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    def _sse_line(self, line: bytes) -> bytes:
+        if not line.startswith(b"data: "):
+            return line
+        try:
+            payload = json.loads(line[6:])
+        except (ValueError, UnicodeDecodeError):
+            return line
+        if not isinstance(payload, dict) or "id" not in payload:
+            return line
+        if _encoded_size(payload) <= self.budget_bytes:
+            return line
+        evidence_id = self.retain("mcp-http-sse", _as_payload(payload.get("result")))
+        replacement = {
+            "jsonrpc": "2.0",
+            "id": payload.get("id"),
+            "error": {
+                "code": -32001,
+                "message": "The result exceeds the MCP response budget.",
+                "data": {
+                    "code": "RESOURCE_CONSTRAINT",
+                    "tag": "AnalysisResourceConstraintError",
+                    "resource": "transport",
+                    "result_budget_bytes": self.budget_bytes,
+                    "response_bytes_at_least": _encoded_size(payload),
+                    "evidence_reference": {
+                        "kind": "retained-evidence",
+                        "evidence_id": evidence_id,
+                    },
+                },
+            },
+        }
+        return b"data: " + json.dumps(replacement, ensure_ascii=False).encode("utf-8")
+
+
+__all__ = ["HttpBudgetMiddleware", "TransportInterceptors", "run_stdio_server"]

@@ -72,6 +72,9 @@ _RECORD_OPERATIONS = {
     "environment-manifest": ("inspect_network_capture", "inspect_web_network_capture"),
     "javascript-facts": ("analyze_javascript_application",),
     "javascript": ("analyze_javascript_application",),
+    "managed": ("inspect_managed_artifact",),
+    "managed-members": ("inspect_managed_members",),
+    "desktop-application": ("inspect_desktop_application",),
 }
 _ID_SEGMENT_RE = re.compile(
     r"^(?:[0-9]+|[0-9a-fA-F]{8,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[A-Za-z0-9_-]{16,})$"
@@ -282,6 +285,9 @@ _VIEWS = {
     "environment-manifest",
     "javascript-facts",
     "javascript",
+    "managed",
+    "managed-members",
+    "desktop-application",
 }
 
 
@@ -312,6 +318,108 @@ def _guard_view(
     }
 
 
+_MANAGED_COLLECTIONS: dict[str, tuple[str, ...]] = {
+    "managed": ("references", "resources", "attributes"),
+    "managed-members": (
+        "types",
+        "exported_types",
+        "fields",
+        "methods",
+        "member_refs",
+        "call_edges",
+        "field_accesses",
+        "field_initializers",
+        "user_strings",
+    ),
+    "desktop-application": ("files", "candidates", "components", "next_probes"),
+}
+
+
+def _managed_view(
+    record: dict[str, Any],
+    view: str,
+    collection: str | None,
+    offset: int,
+    limit: int,
+) -> Result[dict[str, Any], AnalysisError]:
+    normalized = record.get("normalized_result")
+    if not isinstance(normalized, dict):
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message="Managed parent Evidence has no normalized_result object.",
+            )
+        )
+    allowed = _MANAGED_COLLECTIONS[view]
+    if collection is None:
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message=f"{view} requires collection one of {sorted(allowed)}.",
+            )
+        )
+    if collection not in allowed:
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message=f"Unknown {view} collection {collection!r}; choose one of {sorted(allowed)}.",
+            )
+        )
+    rows = normalized.get(collection)
+    if collection == "user_strings":
+        user_strings = normalized.get("user_strings")
+        rows = user_strings.get("literals") if isinstance(user_strings, dict) else None
+        if rows is None:
+            return err(
+                AnalysisInputError(
+                    operation="inspect_analysis_view",
+                    message="The parent Evidence did not examine user strings.",
+                )
+            )
+    if rows is None:
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message=f"The parent Evidence did not examine {collection}.",
+            )
+        )
+    if not isinstance(rows, list):
+        return err(
+            AnalysisInputError(
+                operation="inspect_analysis_view",
+                message=f"Managed collection {collection!r} is not a row list.",
+            )
+        )
+    offset = max(0, offset)
+    limit = min(10_000, max(1, limit))
+    start = min(offset, len(rows))
+    page = rows[start : start + limit]
+    if collection == "types":
+        page = [
+            {key: value for key, value in row.items() if key not in ("methods", "fields")}
+            if isinstance(row, dict)
+            else row
+            for row in page
+        ]
+    return ok(
+        {
+            "kind": view,
+            "parent_evidence_id": record.get("evidence_id"),
+            "collection": collection,
+            "offset": start,
+            "limit": limit,
+            "total": len(rows),
+            "next_offset": start + len(page) if start + len(page) < len(rows) else None,
+            "rows": page,
+            "selection": normalized.get("selection"),
+            "source_coverage": normalized.get("coverage"),
+            "source_metadata_status": (normalized.get("metadata") or {}).get("status"),
+            "source_signature_resolution": normalized.get("signature_resolution"),
+            "source_nesting_read": normalized.get("nesting_read"),
+        }
+    )
+
+
 def load_view(
     source: str | Path,
     view: str = "summary",
@@ -321,6 +429,7 @@ def load_view(
     paths: list[str] | None = None,
     property_keys: list[str] | None = None,
     evidence_id: str | None = None,
+    collection: str | None = None,
     budget_bytes: int = 512 * 1024,
 ) -> Result[dict[str, Any], AnalysisError]:
     path = Path(source)
@@ -365,6 +474,28 @@ def load_view(
                 source=path,
                 budget_bytes=budget_bytes,
                 summary=summarize_bundle(payload),
+            )
+        )
+    if view in ("managed", "managed-members", "desktop-application"):
+        record = _select_record(payload, view, evidence_id)
+        if record is None:
+            return err(
+                AnalysisInputError(
+                    operation="inspect_analysis_view",
+                    message=f"No retained {view} parent Evidence was found in the source.",
+                )
+            )
+        projected = _managed_view(record, view, collection, offset, limit)
+        if not projected.ok:
+            return projected
+        return ok(
+            _guard_view(
+                projected.value,
+                view=view,
+                source=path,
+                budget_bytes=budget_bytes,
+                summary=summarize_record(record),
+                evidence_id=record.get("evidence_id"),
             )
         )
     if view in ("environment-manifest", "javascript-facts", "javascript"):

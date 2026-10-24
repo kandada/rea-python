@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import mmap
 import struct
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +25,19 @@ FIELDPTR = 0x03
 FIELD = 0x04
 METHODPTR = 0x05
 METHODDEF = 0x06
+PARAM = 0x08
+MEMBERREF = 0x0A
+CONSTANT = 0x0B
+CUSTOMATTRIBUTE = 0x0C
+MODULEREF = 0x1A
+TYPESPEC = 0x1B
+IMPLMAP = 0x1C
+PROPERTY = 0x17
+ASSEMBLY = 0x20
+ASSEMBLYREF = 0x23
+EXPORTEDTYPE = 0x27
+MANIFESTRESOURCE = 0x28
+NESTEDCLASS = 0x29
 
 # Column schema: ('u1'|'u2'|'u4'|'str'|'guid'|'blob'| ('idx', table) | ('coded', tables, bits))
 _SIMPLE_TABLES: dict[int, list[Any]] = {
@@ -196,15 +210,17 @@ def _string_at(data: bytes | mmap.mmap, base: int, index: int) -> str:
     return bytes(data[start:end]).decode("utf-8", errors="replace")
 
 
-def parse_managed_members(
-    data: bytes | mmap.mmap, streams: dict[str, int]
-) -> dict[str, Any] | None:
-    """Recover member names from the metadata table stream."""
+def _tables_header(
+    data: bytes | mmap.mmap,
+    streams: dict[str, int],
+    stream_sizes: dict[str, int] | None = None,
+) -> tuple[int, dict[int, int], int, str] | None:
+    """Read the #~ or #- table header and return heap flags, rows and data start."""
 
-    tables_base = streams.get("#~")
-    strings_base = streams.get("#Strings")
-    if tables_base is None or strings_base is None:
+    name = "#~" if "#~" in streams else "#-" if "#-" in streams else None
+    if name is None:
         return None
+    tables_base = streams[name]
     if tables_base + 24 > len(data):
         return None
     heap = data[tables_base + 6]
@@ -213,9 +229,40 @@ def parse_managed_members(
     rows: dict[int, int] = {}
     for index in range(64):
         if valid & (1 << index):
+            if cursor + 4 > len(data):
+                return None
             rows[index] = int.from_bytes(bytes(data[cursor : cursor + 4]), "little")
             cursor += 4
-    rows_start = cursor
+    expected = 0
+    complete = True
+    for index in sorted(rows):
+        if index not in _SIMPLE_TABLES:
+            complete = False
+            break
+        expected += _row_size(index, heap, rows) * rows[index]
+    size = (stream_sizes or {}).get(name)
+    if size is not None and complete:
+        remaining = tables_base + size - cursor
+        # CLR readers accept an optional 4-byte ExtraData word after row counts.
+        if remaining == expected + 4:
+            cursor += 4
+        elif remaining < expected:
+            return None
+    return heap, rows, cursor, name
+
+
+def parse_managed_members(
+    data: bytes | mmap.mmap,
+    streams: dict[str, int],
+    stream_sizes: dict[str, int] | None = None,
+) -> dict[str, Any] | None:
+    """Recover member names from the metadata table stream."""
+
+    header = _tables_header(data, streams, stream_sizes)
+    strings_base = streams.get("#Strings")
+    if header is None or strings_base is None:
+        return None
+    heap, rows, rows_start, _tables_name = header
 
     # Offsets of each present table within the rows block.
     offsets: dict[int, int] = {}
@@ -317,29 +364,96 @@ class MetadataContext:
     heap: int
     rows: dict[int, int]
     offsets: dict[int, int]
+    blob_base: int | None = None
+    guid_base: int | None = None
+    tables_name: str = "#~"
+    stream_sizes: dict[str, int] | None = None
 
     @property
     def string_size(self) -> int:
         return 4 if self.heap & STRING_HEAP_4 else 2
 
+    @property
+    def blob_size(self) -> int:
+        return 4 if self.heap & BLOB_HEAP_4 else 2
 
-def load_metadata(data: bytes | mmap.mmap, streams: dict[str, int]) -> MetadataContext | None:
+    @property
+    def guid_size(self) -> int:
+        return 4 if self.heap & GUID_HEAP_4 else 2
+
+    def row_size(self, table: int) -> int:
+        return _row_size(table, self.heap, self.rows)
+
+    def row_offset(self, table: int, row: int) -> int | None:
+        if row <= 0 or table not in self.offsets:
+            return None
+        return self.offsets[table] + (row - 1) * self.row_size(table)
+
+    def row_count(self, table: int) -> int:
+        return self.rows.get(table, 0)
+
+    def read_index(self, offset: int, size: int | None = None) -> int:
+        return _read_index(self.data, offset, self.string_size if size is None else size)
+
+    def read_string(self, index: int) -> str:
+        return _string_at(self.data, self.strings_base, index)
+
+    def read_blob(self, index: int) -> bytes:
+        if self.blob_base is None or index <= 0:
+            return b""
+        start = self.blob_base + index
+        if start >= len(self.data):
+            return b""
+        length, cursor = _read_uleb(self.data, start)
+        return bytes(self.data[cursor : cursor + length])
+
+    def read_guid(self, index: int) -> str | None:
+        if self.guid_base is None or index <= 0:
+            return None
+        start = self.guid_base + (index - 1) * 16
+        raw = bytes(self.data[start : start + 16])
+        if len(raw) != 16:
+            return None
+        return str(uuid.UUID(bytes_le=raw))
+
+    def simple_size(self, table: int) -> int:
+        return _simple_index(self.rows, table)
+
+    def coded_size(self, tables: tuple[int, ...], bits: int) -> int:
+        return _coded_index(self.rows, tables, bits)
+
+    def coded_token(self, raw: int, tables: tuple[int, ...], bits: int) -> tuple[int, int] | None:
+        tag = raw & ((1 << bits) - 1)
+        row = raw >> bits
+        if row <= 0 or tag >= len(tables):
+            return None
+        return tables[tag], row
+
+    @staticmethod
+    def token(table: int, row: int) -> str:
+        return f"0x{(table << 24) | row:08x}"
+
+    def row_label(self, table: int, row: int) -> str | None:
+        offset = self.row_offset(table, row)
+        if offset is None:
+            return None
+        return _row_label(self, table, row, offset)
+
+
+def load_metadata(
+    data: bytes | mmap.mmap,
+    streams: dict[str, int],
+    stream_sizes: dict[str, int] | None = None,
+) -> MetadataContext | None:
     """Load a context suitable for member recovery and token resolution."""
 
-    tables_base = streams.get("#~")
+    header = _tables_header(data, streams, stream_sizes)
     strings_base = streams.get("#Strings")
-    if tables_base is None or strings_base is None or tables_base + 24 > len(data):
+    if header is None or strings_base is None:
         return None
-    heap = data[tables_base + 6]
-    valid = int.from_bytes(bytes(data[tables_base + 8 : tables_base + 16]), "little")
-    cursor = tables_base + 24
-    rows: dict[int, int] = {}
-    for index in range(64):
-        if valid & (1 << index):
-            rows[index] = int.from_bytes(bytes(data[cursor : cursor + 4]), "little")
-            cursor += 4
+    heap, rows, rows_start, _tables_name = header
     offsets: dict[int, int] = {}
-    position = cursor
+    position = rows_start
     for index in sorted(rows):
         if index not in _SIMPLE_TABLES:
             break
@@ -352,6 +466,10 @@ def load_metadata(data: bytes | mmap.mmap, streams: dict[str, int]) -> MetadataC
         heap=heap,
         rows=rows,
         offsets=offsets,
+        blob_base=streams.get("#Blob"),
+        guid_base=streams.get("#GUID"),
+        tables_name=_tables_name,
+        stream_sizes=stream_sizes,
     )
 
 
@@ -423,10 +541,14 @@ _CALL_CONVENTIONS = {
 }
 
 
-def parse_pinvoke(data: bytes | mmap.mmap, streams: dict[str, int]) -> list[dict[str, Any]] | None:
+def parse_pinvoke(
+    data: bytes | mmap.mmap,
+    streams: dict[str, int],
+    stream_sizes: dict[str, int] | None = None,
+) -> list[dict[str, Any]] | None:
     """Decode ImplMap rows into P/Invoke declarations."""
 
-    context = load_metadata(data, streams)
+    context = load_metadata(data, streams, stream_sizes)
     if context is None:
         return None
     if 0x1C not in context.offsets:

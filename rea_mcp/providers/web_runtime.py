@@ -6,10 +6,15 @@ debug endpoint; page operations need ``playwright`` and a Chrome-family browser.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import shlex
+import signal
+import socket
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -52,6 +57,7 @@ _OPERATIONS = (
     "trace_web_module_imports",
     "trace_web_source_location",
     "discover_webmcp_tools",
+    "invoke_webmcp_tool",
     "trace_native_ui_action",
 )
 _CDP_OPERATIONS = {
@@ -81,9 +87,173 @@ def _http_json(url: str, timeout: float = 5.0) -> Any:
         return json.loads(response.read().decode("utf-8", "replace"))
 
 
+def _electron_executable(parameters: dict[str, Any]) -> str | None:
+    configured = parameters.get("executable") or os.environ.get("REA_ELECTRON_EXECUTABLE")
+    if configured:
+        return str(configured)
+    for root in (Path.cwd(), Path(__file__).resolve().parents[3]):
+        candidate = root / "vendor/tools/electron/node_modules/.bin/electron"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _launch_electron(
+    parameters: dict[str, Any],
+) -> Result[tuple[subprocess.Popen[bytes], str, dict[str, Any]], AnalysisError]:
+    executable = _electron_executable(parameters)
+    app = str(parameters.get("app") or "")
+    if not executable or not Path(executable).is_file():
+        return err(
+            AnalysisCapabilityUnavailableError(
+                message="Electron executable was not found",
+                provider_id=_PROVIDER.id,
+                operation="capture_electron_scenario",
+                reason="provider_unavailable",
+                remediation_action=(
+                    "Install Electron under vendor/tools/electron or set REA_ELECTRON_EXECUTABLE."
+                ),
+            )
+        )
+    if not app or not Path(app).exists():
+        return err(
+            AnalysisInputError(
+                operation="capture_electron_scenario", message="app path does not exist"
+            )
+        )
+    port = int(parameters.get("port") or 0) or _free_port()
+    extra = parameters.get("launch_args") or []
+    if isinstance(extra, str):
+        extra = shlex.split(extra)
+    arguments = [
+        executable,
+        app,
+        f"--remote-debugging-port={port}",
+        *[str(item) for item in extra if str(item)],
+    ]
+    try:
+        process = subprocess.Popen(
+            arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
+        )
+    except OSError as cause:
+        return err(
+            AnalysisCapabilityUnavailableError(
+                message=f"could not launch Electron: {cause}",
+                provider_id=_PROVIDER.id,
+                operation="capture_electron_scenario",
+                reason="provider_unavailable",
+            )
+        )
+    endpoint = f"http://127.0.0.1:{port}"
+    timeout = float(parameters.get("launch_timeout") or 20.0)
+    deadline = time.monotonic() + max(1.0, timeout)
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            _stop_electron(process)
+            return err(
+                AnalysisCapabilityUnavailableError(
+                    message=f"Electron exited before exposing CDP (code {process.returncode})",
+                    provider_id=_PROVIDER.id,
+                    operation="capture_electron_scenario",
+                    reason="provider_unavailable",
+                )
+            )
+        try:
+            _http_json(f"{endpoint}/json/version", timeout=1.0)
+            return ok(
+                (
+                    process,
+                    endpoint,
+                    {
+                        "executable": executable,
+                        "app": app,
+                        "pid": process.pid,
+                        "port": port,
+                        "arguments": arguments[1:],
+                    },
+                )
+            )
+        except (urllib.error.URLError, ValueError, OSError) as cause:
+            last_error = cause
+            time.sleep(0.2)
+    _stop_electron(process)
+    return err(
+        AnalysisCapabilityUnavailableError(
+            message=f"Electron did not expose CDP within {timeout:.0f}s: {last_error}",
+            provider_id=_PROVIDER.id,
+            operation="capture_electron_scenario",
+            reason="provider_unavailable",
+        )
+    )
+
+
+def _stop_electron(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+        else:
+            process.terminate()
+            process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except OSError:
+            pass
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=2)
+
+
 def _targets(parameters: dict[str, Any]) -> list[dict[str, Any]]:
     payload = _http_json(f"{_endpoint(parameters)}/json/list")
     return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+_WEBMCP_INIT_SCRIPT = """
+(() => {
+  window.__reaWebmcpTools = [];
+  window.__reaWebmcpHandlers = window.__reaWebmcpHandlers || {};
+  let context = typeof navigator !== 'undefined' ? navigator.modelContext : null;
+  if (!context && typeof navigator !== 'undefined') {
+    context = {};
+    try { Object.defineProperty(navigator, 'modelContext', { value: context, configurable: true }); } catch (_) { return; }
+  }
+  if (!context) return;
+  for (const method of ['registerTool', 'defineTool']) {
+    if (typeof context[method] !== 'function') context[method] = function () {};
+    const original = context[method];
+    context[method] = function(tool) {
+      try {
+        const name = tool && (tool.name || tool.title) || null;
+        window.__reaWebmcpTools.push({
+          name,
+          description: tool && tool.description || null,
+          inputSchema: tool && tool.inputSchema || null,
+          method,
+        });
+        if (name) window.__reaWebmcpHandlers[name] = tool;
+      } catch (_) {}
+      return original.apply(this, arguments);
+    };
+  }
+})();
+"""
 
 
 class WebRuntimeProvider(AnalysisProvider):
@@ -189,6 +359,19 @@ class WebRuntimeProvider(AnalysisProvider):
     def _cdp(
         self, operation: str, parameters: dict[str, Any]
     ) -> Result[AnalysisExecution, AnalysisError]:
+        if operation == "capture_electron_scenario" and parameters.get("app"):
+            launched = _launch_electron(parameters)
+            if not launched.ok:
+                return err(launched.error)
+            process, launched_endpoint, launch = launched.value
+            scoped = {**parameters, "endpoint": launched_endpoint}
+            try:
+                result = self._scenario_over_cdp(launched_endpoint, scoped, operation)
+                if result.ok and isinstance(result.value.result, dict):
+                    result.value.result["launch"] = launch
+                return result
+            finally:
+                _stop_electron(process)
         endpoint = _endpoint(parameters)
         try:
             targets = _targets(parameters)
@@ -344,29 +527,108 @@ class WebRuntimeProvider(AnalysisProvider):
                     operation="inspect_web_event_listeners", message="url is required"
                 )
             )
+        selector = str(parameters.get("selector") or "body")
         playwright, browser, page = self._new_page()
+        scripts: dict[str, str] = {}
+        source_error: str | None = None
+        listeners: list[dict[str, Any]] = []
         try:
+            context = page.context
+            cdp = context.new_cdp_session(page)
+
+            def on_script(event: dict[str, Any]) -> None:
+                scripts[str(event.get("scriptId"))] = str(event.get("url") or "")
+
+            cdp.on("Debugger.scriptParsed", on_script)
+            cdp.send("Debugger.enable")
+            cdp.send("DOM.enable")
             page.goto(str(url), wait_until="domcontentloaded")
+            page.wait_for_timeout(100)
             inline = page.eval_on_selector_all(
                 "*",
                 "els => els.flatMap(e => Array.from(e.attributes||[]).filter(a => a.name.startsWith('on')).map(a => ({tag: e.tagName, attribute: a.name, value: a.value})))",
             )
-            scripts = page.eval_on_selector_all(
+            inline_scripts = page.eval_on_selector_all(
                 "script",
                 "els => els.map(e => e.textContent || '').filter(Boolean)",
             )
             registrations = [
                 {"script_index": index, "occurrences": text.count("addEventListener")}
-                for index, text in enumerate(scripts)
+                for index, text in enumerate(inline_scripts)
                 if "addEventListener" in text
             ]
+            try:
+                document = cdp.send("DOM.getDocument", {"depth": 0})
+                matches = cdp.send(
+                    "DOM.querySelectorAll",
+                    {"nodeId": document["root"]["nodeId"], "selector": selector},
+                )
+                node_ids = matches.get("nodeIds") or []
+                if node_ids:
+                    resolved = cdp.send("DOM.resolveNode", {"nodeId": node_ids[0]})
+                    object_id = resolved.get("object", {}).get("objectId")
+                    if object_id:
+                        payload = cdp.send(
+                            "DOMDebugger.getEventListeners",
+                            {"objectId": object_id, "depth": 1, "pierce": True},
+                        )
+                        for listener in (payload.get("listeners") or [])[:200]:
+                            script_id = str(listener.get("scriptId") or "")
+                            line = int(listener.get("lineNumber") or 0)
+                            column = int(listener.get("columnNumber") or 0)
+                            source_line = None
+                            if script_id:
+                                try:
+                                    source = (
+                                        cdp.send(
+                                            "Debugger.getScriptSource", {"scriptId": script_id}
+                                        ).get("scriptSource")
+                                        or ""
+                                    )
+                                    lines = source.splitlines()
+                                    if lines:
+                                        source_line = lines[min(max(line, 0), len(lines) - 1)][
+                                            :1000
+                                        ]
+                                except Exception:
+                                    source_line = None
+                            listeners.append(
+                                {
+                                    "type": listener.get("type"),
+                                    "use_capture": bool(listener.get("useCapture")),
+                                    "passive": bool(listener.get("passive")),
+                                    "once": bool(listener.get("once")),
+                                    "script_id": script_id or None,
+                                    "script_url": scripts.get(script_id) or None,
+                                    "line": line + 1 if script_id else None,
+                                    "column": column,
+                                    "source_line": source_line,
+                                    "handler": (listener.get("handler") or {}).get("description"),
+                                    "selector": selector,
+                                    "frame_url": page.url,
+                                }
+                            )
+            except Exception as cause:
+                source_error = str(cause)
         finally:
             browser.close()
             playwright.stop()
         return ok(
             AnalysisExecution(
-                result={"url": url, "inline_handlers": inline, "add_event_listener": registrations},
+                result={
+                    "url": url,
+                    "selector": selector,
+                    "inline_handlers": inline,
+                    "add_event_listener": registrations,
+                    "listeners": listeners,
+                    "listener_count": len(listeners),
+                    "source_location_error": source_error,
+                },
                 provider=self.identity(),
+                limitations=(
+                    "Listener ownership is limited to the first matching main-document element.",
+                    "Listener source locations come from the page debugger and may be unavailable for native or workers.",
+                ),
             )
         )
 
@@ -636,7 +898,7 @@ class WebRuntimeProvider(AnalysisProvider):
                     text = page.request.get(str(source)).text()
                 except Exception:
                     continue
-                match = re.search(r"//# sourceMappingURL=(\\S+)", text)
+                match = re.search(r"//# sourceMappingURL=(\S+)", text)
                 if not match:
                     continue
                 map_url = urllib.parse.urljoin(str(source), match.group(1))
@@ -733,14 +995,90 @@ class WebRuntimeProvider(AnalysisProvider):
             )
         playwright, browser, page = self._new_page()
         try:
+            page.add_init_script(_WEBMCP_INIT_SCRIPT)
             page.goto(str(url), wait_until="domcontentloaded")
             declared = page.evaluate(
-                "() => ({modelContext: typeof navigator !== 'undefined' && !!navigator.modelContext, markers: Array.from(document.querySelectorAll('[data-webmcp], [data-mcp-tool]')).map(e => ({tag: e.tagName, name: e.getAttribute('data-mcp-tool') || e.getAttribute('name')}))})"
+                "() => ({modelContext: typeof navigator !== 'undefined' && !!navigator.modelContext, markers: Array.from(document.querySelectorAll('[data-webmcp], [data-mcp-tool]')).map(e => ({tag: e.tagName, name: e.getAttribute('data-mcp-tool') || e.getAttribute('name')})), registered_tools: window.__reaWebmcpTools || []})"
             )
         finally:
             browser.close()
             playwright.stop()
-        return ok(AnalysisExecution(result={"url": url, **declared}, provider=self.identity()))
+        registered = declared.get("registered_tools") or []
+        return ok(
+            AnalysisExecution(
+                result={
+                    "url": url,
+                    **declared,
+                    "tool_count": len(registered),
+                    "limitations": [
+                        "Only registrations that occur after the page starts and before the observation ends are captured."
+                    ]
+                    if registered
+                    else [],
+                },
+                provider=self.identity(),
+            )
+        )
+
+    def _op_invoke_webmcp_tool(self, target: BinaryTarget, parameters: dict[str, Any]) -> Any:
+        del target
+        url = parameters.get("url")
+        name = parameters.get("name") or parameters.get("tool")
+        arguments = parameters.get("arguments") or {}
+        if not url or not name:
+            return err(
+                AnalysisInputError(
+                    operation="invoke_webmcp_tool", message="url and name are required"
+                )
+            )
+        if not isinstance(arguments, dict):
+            return err(
+                AnalysisInputError(
+                    operation="invoke_webmcp_tool", message="arguments must be an object"
+                )
+            )
+        try:
+            import json as _json
+
+            encoded = _json.dumps(arguments)
+        except (TypeError, ValueError) as cause:
+            return err(AnalysisInputError(operation="invoke_webmcp_tool", message=str(cause)))
+        playwright, browser, page = self._new_page()
+        try:
+            page.add_init_script(_WEBMCP_INIT_SCRIPT)
+            page.goto(str(url), wait_until="domcontentloaded")
+            outcome = page.evaluate(
+                """async ({name, encoded}) => {
+                  const tool = window.__reaWebmcpHandlers && window.__reaWebmcpHandlers[name];
+                  if (!tool) return {status: 'unknown', error: 'tool not registered'};
+                  const fn = tool.execute || tool.handler || tool.invoke || tool.run;
+                  if (typeof fn !== 'function') return {status: 'unknown', error: 'tool has no executable handler'};
+                  try {
+                    const value = await fn.call(tool, JSON.parse(encoded));
+                    return {status: 'called', result: value};
+                  } catch (error) {
+                    return {status: 'error', error: String(error && error.message || error)};
+                  }
+                }""",
+                {"name": str(name), "encoded": encoded},
+            )
+        finally:
+            browser.close()
+            playwright.stop()
+        return ok(
+            AnalysisExecution(
+                result={
+                    "url": url,
+                    "name": name,
+                    "arguments": arguments,
+                    **outcome,
+                    "limitations": (
+                        "This explicitly executes the page's registered WebMCP handler; target behavior is not otherwise analyzed."
+                    ),
+                },
+                provider=self.identity(),
+            )
+        )
 
     def _op_analyze_web_bundle(self, target: BinaryTarget, parameters: dict[str, Any]) -> Any:
         path = parameters.get("path") or target.path

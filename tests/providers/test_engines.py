@@ -124,7 +124,14 @@ def test_signal_real(elf_file: Path) -> None:
 @pytest.mark.real_engine
 @pytest.mark.skipif(not _available(KunaProvider()), reason="requires REA_KUNA_COMMAND")
 def test_kuna_real(elf_file: Path) -> None:
-    result = KunaProvider().analyze("kuna_decompile", _target(elf_file), {}, None)
+    provider = KunaProvider()
+    target = _target(elf_file)
+    procedures = provider.analyze("list_procedures", target, {}, None)
+    assert procedures.ok
+    records = procedures.value.result["procedures"]["functions"]
+    if not records:
+        return
+    result = provider.analyze("kuna_decompile", target, {"function": records[0]["name"]}, None)
     assert result.ok
 
 
@@ -717,3 +724,33 @@ def test_kuna_operations_fake(
     assembly = provider.analyze("procedure_assembly", target, {"function": "main"}, None)
     assert assembly.ok
     assert "nop" in assembly.value.result["assembly"]
+
+
+def test_kuna_raw_image_arguments(tmp_path: Path) -> None:
+    from rea_mcp.domain.binary_target import parse_binary_target
+    from rea_mcp.providers.engines import _kuna_raw_args
+
+    raw = tmp_path / "firmware.bin"
+    raw.write_bytes(b"\x90" * 64)
+    target = parse_binary_target(raw, format_hint="raw-binary")
+    assert target.ok
+    arguments = _kuna_raw_args(
+        target.value,
+        {"target": "x86:LE:64:default", "base": "0x100000000", "entry": "0x100000010"},
+    )
+    assert arguments == [
+        "--raw-image",
+        "--target",
+        "x86:LE:64:default",
+        "--base",
+        "0x100000000",
+        "--entry",
+        "0x100000010",
+    ]
+    assert _kuna_raw_args(target.value, {"address": "0x10"}, include_entry=False) == [
+        "--raw-image",
+        "--target",
+        "x86:LE:64:default",
+        "--base",
+        "0x0",
+    ]

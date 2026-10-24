@@ -56,9 +56,68 @@ class PagedAnalysisInput(AnalysisInput):
     limit: int = Field(default=256, ge=1, le=1000)
 
 
+class ManagedArtifactInput(AnalysisInput):
+    detail: Literal["complete", "summary"] = "complete"
+
+
+class TwoPathsInput(_Input):
+    left: str = Field(min_length=1)
+    right: str = Field(min_length=1)
+
+
+class FeatureInput(_Input):
+    path: str = Field(min_length=1)
+    feature: str = Field(min_length=1)
+
+
+class NodeTraceInput(_Input):
+    path: str = Field(min_length=1)
+    node: str = Field(min_length=1)
+
+
+class ExportShapeInput(_Input):
+    left: str = Field(min_length=1)
+    right: str = Field(min_length=1)
+    module: str = Field(min_length=1)
+    export_name: str = Field(min_length=1)
+
+
+class Il2CppInput(AnalysisInput):
+    binary_path: str | None = None
+
+
+class MatchNativeInput(_Input):
+    left: str = Field(min_length=1)
+    right: str = Field(min_length=1)
+    query: str | None = None
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+class CompareWasmInput(_Input):
+    left: str = Field(min_length=1)
+    right: str = Field(min_length=1)
+    selection: Literal["both", "imports", "exports"] = "both"
+
+
+class ManagedPathInput(_Input):
+    path: str = Field(min_length=1)
+
+
+class VerifyManagedBoundariesInput(_Input):
+    managed: str = Field(min_length=1)
+    boundaries: list[str] = Field(min_length=1)
+
+
+class ManagedJsonInput(_Input):
+    path: str = Field(min_length=1)
+
+
 class ManagedMembersInput(PagedAnalysisInput):
     method_offset: int = Field(default=0, ge=0)
     method_limit: int = Field(default=64, ge=1, le=1000)
+    type_names: list[str] | None = None
+    detail: Literal["complete", "summary"] = "complete"
+    include_bodies: bool | None = None
 
 
 class JavaScriptInput(PagedAnalysisInput):
@@ -103,12 +162,16 @@ class AnalysisViewInput(_Input):
         "environment-manifest",
         "javascript-facts",
         "javascript",
+        "managed",
+        "managed-members",
+        "desktop-application",
     ] = "summary"
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=64, ge=1, le=1000)
     paths: list[str] | None = None
     property_keys: list[str] | None = None
     evidence_id: str | None = None
+    collection: str | None = None
 
 
 class SetupInput(_Input):
@@ -117,8 +180,11 @@ class SetupInput(_Input):
 
 
 class MethodInput(AnalysisInput):
-    method: str = Field(min_length=1)
+    method: str = ""
     type: str | None = None
+    token: str | None = None
+    rva: str | None = None
+    signature: str | None = None
 
 
 class RecordUnknownToolInput(_Input):
@@ -178,6 +244,14 @@ class FunctionInput(AnalysisInput):
 class SearchInput(AnalysisInput):
     query: str = Field(min_length=1)
     limit: int = Field(default=100, ge=1, le=10000)
+
+
+class ManagedCSharpInput(AnalysisInput):
+    type: str = Field(min_length=1)
+    method: str | None = None
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=500, ge=1, le=1000)
+    max_bytes: int = Field(default=64_000, ge=0, le=10_000_000)
 
 
 class DecompileInput(AnalysisInput):
@@ -367,6 +441,12 @@ class AndroidDeepInput(AnalysisInput):
     limit: int = Field(default=200, ge=1, le=10_000)
 
 
+class WebMcpInvokeInput(_Input):
+    url: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class WebToolInput(_Input):
     url: str | None = None
     endpoint: str | None = None
@@ -441,9 +521,18 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         operation=None,
         returns_evidence=False,
     ),
+    _analysis_contract("inspect_byte_entropy", "File and block byte entropy.", AnalysisInput),
+    _analysis_contract("read_bytes", "Read file-backed bytes at an address.", AnalysisInput),
+    _analysis_contract("search_bytes", "Search file-backed bytes with wildcards.", AnalysisInput),
+    _analysis_contract("address_to_file_offset", "Map an address to a file offset.", AnalysisInput),
     _analysis_contract(
         "inspect_binary_layout",
         "Sections, segments, symbols and mitigation candidates for ELF/PE/Mach-O.",
+        AnalysisInput,
+    ),
+    _analysis_contract(
+        "inspect_elf_notes",
+        "ELF PT_NOTE and SHT_NOTE tables.",
         AnalysisInput,
     ),
     _analysis_contract(
@@ -459,7 +548,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract(
         "inspect_managed_artifact",
         "Static .NET/CLI metadata identity and table counts.",
-        AnalysisInput,
+        ManagedArtifactInput,
     ),
     _analysis_contract(
         "inspect_managed_members",
@@ -488,6 +577,36 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         "inspect_keyed_archive", "NSKeyedArchiver class and object inventory.", AnalysisInput
     ),
     _analysis_contract("inspect_pe_resources", "PE resource types and counts.", AnalysisInput),
+    _analysis_contract(
+        "inspect_pe_certificates",
+        "PE Authenticode certificate-table entries.",
+        AnalysisInput,
+    ),
+    _analysis_contract(
+        "inspect_native_exports",
+        "PE/ELF export names, ordinals and addresses.",
+        AnalysisInput,
+    ),
+    _analysis_contract(
+        "inspect_javascript_webmcp",
+        "Static JavaScript WebMCP declaration candidates.",
+        PagedAnalysisInput,
+    ),
+    _analysis_contract(
+        "inspect_javascript_source_maps",
+        "Static JavaScript source-map inventory.",
+        PagedAnalysisInput,
+    ),
+    _analysis_contract(
+        "inspect_javascript_routes",
+        "Static JavaScript route candidates.",
+        PagedAnalysisInput,
+    ),
+    _analysis_contract(
+        "inspect_javascript_dataflow",
+        "Static JavaScript storage/DOM source-to-sink flows.",
+        PagedAnalysisInput,
+    ),
     _analysis_contract(
         "inspect_asset_catalog",
         "Apple asset catalog (Assets.car) header and embedded strings.",
@@ -525,6 +644,11 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         "identify_flutter_build", "Flutter AOT snapshot fingerprint per ABI.", AnalysisInput
     ),
     _analysis_contract(
+        "inspect_erlang_beam",
+        "Erlang BEAM IFF chunks and atoms.",
+        AnalysisInput,
+    ),
+    _analysis_contract(
         "inspect_wasm_artifact",
         "WASM validation, sections and (with WABT) decoded WAT.",
         AnalysisInput,
@@ -555,6 +679,11 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _analysis_contract("analyze", "Provider overview analysis.", AnalysisInput),
     _analysis_contract("function", "List/select functions.", FunctionInput),
     _analysis_contract("decompile", "Pseudocode for a function.", DecompileInput),
+    _analysis_contract(
+        "decompile_managed_csharp",
+        "Optional C# decompilation through ilspycmd.",
+        ManagedCSharpInput,
+    ),
     _analysis_contract("search", "Search within the target.", SearchInput),
     _analysis_contract("xrefs", "Cross-references to an address or function.", XrefsInput),
     ToolContract(
@@ -1161,6 +1290,111 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         "cutter_command", "Run a command through the Cutter bridge.", DebugSessionInput
     ),
     ToolContract(
+        name="inspect_managed_native_boundaries",
+        description="Inspect managed P/Invoke and native implementation declarations.",
+        input_model=ManagedPathInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="verify_managed_native_boundaries",
+        description="Verify declared managed native boundaries.",
+        input_model=VerifyManagedBoundariesInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="import_managed_reconstruction",
+        description="Import a managed reconstruction ledger.",
+        input_model=ManagedJsonInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_application_versions",
+        description="Compare two static JavaScript application graphs.",
+        input_model=TwoPathsInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_source_to_bundle",
+        description="Compare a source graph with a shipped application graph.",
+        input_model=TwoPathsInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_application_feature",
+        description="Trace a feature through a static JavaScript application graph.",
+        input_model=FeatureInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="trace_javascript_semantics",
+        description="Trace static JavaScript module semantics.",
+        input_model=NodeTraceInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_javascript_export_shapes",
+        description="Compare static JavaScript module/export shape evidence.",
+        input_model=ExportShapeInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="invoke_webmcp_tool",
+        description="Explicitly invoke a registered WebMCP tool.",
+        input_model=WebMcpInvokeInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="match_native_functions",
+        description="Match exact native export names between two binaries.",
+        input_model=MatchNativeInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="compare_wasm_interfaces",
+        description="Compare WASM import/export declarations.",
+        input_model=CompareWasmInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="project_android_application_graph",
+        description="Project an Android application graph.",
+        input_model=ManagedPathInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="project_apple_application_graph",
+        description="Project an Apple application graph.",
+        input_model=ManagedPathInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="project_harmony_application_graph",
+        description="Project a Harmony application graph.",
+        input_model=ManagedPathInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
+        name="project_managed_application_graph",
+        description="Project a managed application graph.",
+        input_model=ManagedPathInput,
+        operation=None,
+        returns_evidence=False,
+    ),
+    ToolContract(
         name="get_evidence_bundle",
         description="Return a summary of the session Evidence bundle (or the full bundle).",
         input_model=GetEvidenceBundleInput,
@@ -1323,7 +1557,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     ),
     ToolContract(
         name="inspect_web_event_listeners",
-        description="Inspect inline handlers and addEventListener use.",
+        description="Inspect inline handlers and native listener source locations.",
         input_model=WebToolInput,
         operation="inspect_web_event_listeners",
         requires_target=False,

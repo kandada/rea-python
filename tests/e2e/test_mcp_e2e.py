@@ -15,7 +15,7 @@ pytestmark = pytest.mark.mcp
 async def test_lists_full_tool_catalog() -> None:
     async with mcp_client() as client:
         tools = await client.list_tools()
-    assert len(tools) == 232
+    assert len(tools) == 265
     assert {"open_binary", "inspect_binary_layout", "doctor", "compare_evidence"} <= set(tools)
 
 
@@ -174,3 +174,13 @@ async def test_snapshot_round_trip(elf_file: Path, tmp_path: Path) -> None:
             "snapshot_import", {"path": str(elf_file), "source": str(destination)}
         )
         assert imported["imported"] is True
+
+
+async def test_schema_exposes_kuna_raw_and_electron_launch_arguments() -> None:
+    async with mcp_client() as client:
+        tools = {tool.name: tool for tool in await client.tool_models()}
+    for name in ("kuna_decompile", "list_procedures", "list_strings", "xrefs"):
+        properties = tools[name].inputSchema["properties"]
+        assert {"raw_image", "target", "base", "entry"} <= set(properties)
+    electron = tools["capture_electron_scenario"].inputSchema["properties"]
+    assert {"app", "executable", "port", "launch_args", "launch_timeout"} <= set(electron)

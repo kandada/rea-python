@@ -319,3 +319,203 @@ def test_truncate_result_text_adds_metadata() -> None:
     untouched = {"normalized_result": {"pseudocode": "abc"}}
     _truncate_result_text(untouched, 100)
     assert untouched["normalized_result"] == {"pseudocode": "abc"}
+
+
+async def test_managed_tool_surface_matches_upstream() -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    names = {tool.name for tool in await server.list_tools()}
+    for name in (
+        "inspect_managed_artifact",
+        "inspect_managed_members",
+        "inspect_managed_native_boundaries",
+        "compare_managed_members",
+        "verify_managed_native_boundaries",
+        "import_managed_reconstruction",
+        "project_managed_application_graph",
+    ):
+        assert name in names
+
+
+async def test_managed_members_summary_mcp(pe_clr_file: Path) -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    result = await _call(
+        server,
+        "inspect_managed_members",
+        {
+            "path": str(pe_clr_file),
+            "type_names": ["MyNamespace.MyType"],
+            "detail": "summary",
+        },
+    )
+    assert result["kind"] == "managed-member-summary"
+    assert result["reported_counts"]["methods"] == 1
+    assert result["selection"]["unmatched_type_names"] == []
+
+
+def test_http_transport_settings(monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+
+    from rea_mcp.server.app import run_mcp_http_server
+
+    captured: dict[str, Any] = {}
+    settings = SimpleNamespace(
+        host="",
+        port=0,
+        streamable_http_path="",
+        json_response=False,
+        transport_security=SimpleNamespace(allowed_hosts=[]),
+    )
+
+    class _App:
+        def add_middleware(self, middleware: Any, **kwargs: Any) -> None:
+            captured["middleware"] = middleware
+            captured["middleware_kwargs"] = kwargs
+
+    class _Server:
+        def __init__(self) -> None:
+            self.settings = settings
+
+        def streamable_http_app(self) -> _App:
+            return _App()
+
+    monkeypatch.setattr("rea_mcp.server.app.build_mcp_server", lambda *args, **kwargs: _Server())
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: captured.update(run=kwargs))
+    run_mcp_http_server(
+        create_binary_session(AppConfig()), AppConfig(), host="0.0.0.0", port=9001, path="/x"
+    )
+    assert captured["run"]["port"] == 9001
+    assert settings.host == "0.0.0.0"
+    assert settings.port == 9001
+    assert settings.streamable_http_path == "/x"
+    assert settings.json_response is True
+    assert captured["middleware"].__name__ == "HttpBudgetMiddleware"
+
+
+async def test_managed_workflow_tools_call(pe_clr_file: Path) -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    boundaries = await _call(
+        server, "inspect_managed_native_boundaries", {"path": str(pe_clr_file)}
+    )
+    assert "pinvoke" in boundaries
+    verified = await _call(
+        server,
+        "verify_managed_native_boundaries",
+        {"managed": str(pe_clr_file), "boundaries": ["MyMethod"]},
+    )
+    assert "boundaries" in verified
+    graph = await _call(server, "project_managed_application_graph", {"path": str(pe_clr_file)})
+    assert graph["nodes"]
+    assert any(node["kind"] == "method" for node in graph["nodes"])
+
+
+async def test_http_budget_middleware_retains_oversized_result() -> None:
+    from rea_mcp.server.transport import HttpBudgetMiddleware
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        del scope, receive
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": json.dumps(
+                    {"jsonrpc": "2.0", "id": 7, "result": {"value": "x" * 500}}
+                ).encode(),
+            }
+        )
+
+    retained: list[dict[str, Any]] = []
+
+    def retain(operation: str, payload: dict[str, Any]) -> str:
+        retained.append({"operation": operation, "payload": payload})
+        return "ev_http"
+
+    middleware = HttpBudgetMiddleware(app, budget_bytes=64, retain=retain)
+    messages: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await middleware({"type": "http"}, None, send)
+    body = json.loads(messages[-1]["body"])
+    assert body["id"] == 7
+    assert body["error"]["data"]["evidence_reference"]["evidence_id"] == "ev_http"
+    assert retained[0]["operation"] == "mcp-http"
+
+
+async def test_project_android_graph_mcp(apk_file: Path) -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    graph = await _call(server, "project_android_application_graph", {"path": str(apk_file)})
+    assert graph["nodes"]
+    assert graph["root"]
+
+
+async def test_application_graph_workflows(js_dir: Path, tmp_path: Path) -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    compared = await _call(
+        server,
+        "compare_application_versions",
+        {"left": str(js_dir), "right": str(js_dir)},
+    )
+    assert compared["status"] == "unchanged"
+    traced = await _call(
+        server,
+        "trace_application_feature",
+        {"path": str(js_dir), "feature": "renderer"},
+    )
+    assert traced["status"] == "matched"
+    semantics = await _call(
+        server,
+        "trace_javascript_semantics",
+        {"path": str(js_dir), "node": "main.js"},
+    )
+    assert semantics["status"] == "observed"
+
+
+async def test_http_sse_budget_middleware() -> None:
+    from rea_mcp.server.transport import HttpBudgetMiddleware
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        del scope, receive
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"event: message\n", "more_body": True})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b'data: {"jsonrpc":"2.0","id":1,"result":{"value":"'
+                + b"x" * 500
+                + b'"}}\n',
+                "more_body": False,
+            }
+        )
+
+    retained: list[str] = []
+
+    def retain(operation: str, payload: dict[str, Any]) -> str:
+        retained.append(operation)
+        return "ev_sse"
+
+    middleware = HttpBudgetMiddleware(app, budget_bytes=64, retain=retain)
+    messages: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await middleware({"type": "http"}, None, send)
+    body = b"".join(
+        message.get("body", b"") for message in messages if message["type"] == "http.response.body"
+    )
+    assert b"RESOURCE_CONSTRAINT" in body
+    assert b"ev_sse" in body
+    assert retained == ["mcp-http-sse"]

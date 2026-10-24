@@ -611,3 +611,74 @@ def test_asar_integrity(asar_integrity_file: Path) -> None:
     entry = integrity["entries"][0]
     assert entry["path"] == "main.js"
     assert entry["block_count"] == 1
+
+
+def test_javascript_storage_dataflow(tmp_path: Path) -> None:
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "main.js").write_text(
+        "\n".join(
+            [
+                'const token = localStorage.getItem("token");',
+                "const query = location.search;",
+                'fetch("/api?q=" + token);',
+                "document.body.innerHTML = query;",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = JavaScriptApplicationProvider().analyze(
+        "inspect_javascript_dataflow", _target(app), {}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["operation_count"] >= 1
+    flows = {(row["source"], row["sink"]) for row in data["flows"]}
+    assert ("storage-get", "network") in flows
+    assert ("location", "dom-html") in flows
+
+
+def test_javascript_message_and_navigation_flows(tmp_path: Path) -> None:
+    app = tmp_path / "app2"
+    app.mkdir()
+    (app / "main.js").write_text(
+        "\n".join(
+            [
+                "window.addEventListener('message', (event) => {",
+                "  const target = event.data;",
+                "  window.open(target);",
+                "});",
+                "const input = document.querySelector('#q').value;",
+                "location.assign(input);",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = JavaScriptApplicationProvider().analyze(
+        "inspect_javascript_dataflow", _target(app), {}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    flows = {(row["source"], row["sink"]) for row in result.value.result["flows"]}
+    assert ("message", "navigation") in flows
+    assert ("dom-value", "navigation") in flows
+
+
+def test_javascript_cross_module_dataflow(tmp_path: Path) -> None:
+    app = tmp_path / "app3"
+    app.mkdir()
+    (app / "source.js").write_text(
+        'export const token = localStorage.getItem("token");\n', encoding="utf-8"
+    )
+    (app / "main.js").write_text(
+        'import { token } from "./source";\nfetch("/api?t=" + token);\n',
+        encoding="utf-8",
+    )
+    result = JavaScriptApplicationProvider().analyze(
+        "inspect_javascript_dataflow", _target(app), {}, None
+    )  # type: ignore[arg-type]
+    assert result.ok
+    data = result.value.result
+    assert data["exported_source_count"] >= 1
+    assert data["imported_source_count"] >= 1
+    flows = {(row["module"], row["source"], row["sink"]) for row in result.value.result["flows"]}
+    assert ("main.js", "storage-get", "network") in flows

@@ -7,8 +7,32 @@ from typing import Any
 
 from ..providers.base import AnalysisProvider
 
+CORE_PROVIDER_IDS = (
+    "binary-layout",
+    "dotnet",
+    "artifacts",
+    "sqlite",
+    "android",
+    "javascript",
+    "plist",
+    "pe-resources",
+    "network-capture",
+)
 
-def doctor_report(providers: list[AnalysisProvider]) -> dict[str, Any]:
+PROFILE_PROVIDER_IDS: dict[str, tuple[str, ...]] = {
+    "core": CORE_PROVIDER_IDS,
+    "powerbi": ("binary-layout", "dotnet", "artifacts"),
+    "android": ("android", "android-deep"),
+    "web": ("javascript", "electron", "web-runtime", "cdp"),
+}
+
+
+def doctor_report(
+    providers: list[AnalysisProvider],
+    *,
+    required: list[str] | None = None,
+    profile: str | None = None,
+) -> dict[str, Any]:
     """Summarize provider and external-tool availability."""
 
     entries: list[dict[str, Any]] = []
@@ -43,8 +67,25 @@ def doctor_report(providers: list[AnalysisProvider]) -> dict[str, Any]:
                 timeout_source = "invalid"
         except ValueError:
             timeout_source = "invalid"
+    available = {entry["id"] for entry in entries if entry["available"]}
+    if required is None and profile is not None:
+        required = list(PROFILE_PROVIDER_IDS.get(profile.lower(), ()))
+    if required is None:
+        required = list(CORE_PROVIDER_IDS)
+    required_ids = list(dict.fromkeys(required))
+    missing_required = [provider_id for provider_id in required_ids if provider_id not in available]
+    healthy_core = not [
+        provider_id for provider_id in CORE_PROVIDER_IDS if provider_id not in available
+    ]
+    healthy_all = all(entry["available"] for entry in entries)
     return {
-        "healthy": all(entry["available"] for entry in entries),
+        "healthy": healthy_all,
+        "healthy_all": healthy_all,
+        "healthy_core": healthy_core,
+        "healthy_required": not missing_required,
+        "profile": profile,
+        "required": required_ids,
+        "missing_required": missing_required,
         "provider_count": len(entries),
         "providers": entries,
         "environment": {

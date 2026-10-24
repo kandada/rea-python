@@ -85,6 +85,22 @@ def test_contract_examples_are_valid() -> None:
         "compare_artifacts",
         "export_evidence_bundle",
         "import_evidence_bundle",
+        "inspect_managed_native_boundaries",
+        "verify_managed_native_boundaries",
+        "import_managed_reconstruction",
+        "project_managed_application_graph",
+        "decompile_managed_csharp",
+        "project_android_application_graph",
+        "project_apple_application_graph",
+        "project_harmony_application_graph",
+        "compare_wasm_interfaces",
+        "match_native_functions",
+        "invoke_webmcp_tool",
+        "compare_application_versions",
+        "compare_source_to_bundle",
+        "trace_application_feature",
+        "trace_javascript_semantics",
+        "compare_javascript_export_shapes",
     }
     for contract in TOOL_CONTRACTS:
         if contract.name in requires_input:

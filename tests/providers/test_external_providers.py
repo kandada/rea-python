@@ -129,3 +129,14 @@ def test_plist_provider(plist_file: Path) -> None:
     assert result.ok
     assert result.value.result["plist_format"] == "xml"
     assert "CFBundleIdentifier" in result.value.result["top_level_keys"]
+
+
+def test_doctor_core_and_required_profiles() -> None:
+    report = doctor_report(build_providers(), required=["dotnet", "artifacts"], profile="powerbi")
+    assert report["healthy_required"] is True
+    assert report["missing_required"] == []
+    assert isinstance(report["healthy_core"], bool)
+    assert isinstance(report["healthy_all"], bool)
+    missing = doctor_report(build_providers(), required=["not-a-provider"])
+    assert missing["healthy_required"] is False
+    assert missing["missing_required"] == ["not-a-provider"]

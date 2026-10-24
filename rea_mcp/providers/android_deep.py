@@ -6,7 +6,9 @@ from the resulting Java sources. JADX is never installed by REA.
 
 from __future__ import annotations
 
+import atexit
 import shlex
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,16 @@ _OPERATIONS = (
     "inspect_android_method",
     "trace_android_references",
 )
-_CACHE: dict[tuple[str, str], Path] = {}
+_CACHE: dict[tuple[str, str, int, int], Path] = {}
+
+
+def _cleanup_cache() -> None:
+    for root in list(_CACHE.values()):
+        shutil.rmtree(root, ignore_errors=True)
+    _CACHE.clear()
+
+
+atexit.register(_cleanup_cache)
 
 
 class AndroidDeepProvider(_CliEngine):
@@ -75,7 +86,11 @@ class AndroidDeepProvider(_CliEngine):
         return self._references(root, parameters, operation)
 
     def _decompile(self, command: str, apk: str, operation: str) -> Result[Path, AnalysisError]:
-        key = (command, apk)
+        try:
+            stat = Path(apk).stat()
+        except OSError as cause:
+            return err(AnalysisInputError(operation=operation, message=str(cause)))
+        key = (command, apk, stat.st_mtime_ns, stat.st_size)
         cached = _CACHE.get(key)
         if cached is not None and cached.exists():
             return ok(cached)
@@ -87,8 +102,13 @@ class AndroidDeepProvider(_CliEngine):
             max_output_bytes=512 * 1024,
         )
         if not result.ok:
+            shutil.rmtree(root, ignore_errors=True)
             return err(result.error)
         _CACHE[key] = root
+        if len(_CACHE) > 16:
+            oldest_key = next(iter(_CACHE))
+            if oldest_key != key:
+                shutil.rmtree(_CACHE.pop(oldest_key), ignore_errors=True)
         return ok(root)
 
     def _search(self, root: Path, parameters: dict[str, Any], operation: str) -> Any:

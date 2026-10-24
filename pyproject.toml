@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rea-mcp"
-version = "0.1.7"
+version = "0.1.51"
 description = "rea-mcp - reverse engineer anything from your terminal or agent, with one CLI and MCP server."
 readme = "README.md"
 license = "MIT"
@@ -39,6 +39,8 @@ dependencies = [
     "pydantic-settings>=2.2",
     "typer>=0.12",
     "mcp>=1.26,<2",
+    "uvicorn>=0.30",
+    "msgpack>=1.0",
 ]
 
 [project.optional-dependencies]

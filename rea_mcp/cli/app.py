@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from ..config.settings import AppConfig
 from ..domain.analysis_error import AnalysisError, AnalysisInputError
 from ..domain.comparison import compare_evidence as compare_evidence_fn
 from ..domain.evidence import parse_evidence
-from .output import emit_json, fail
+from .output import emit_json, fail, set_output_budget
 
 app = typer.Typer(
     name="rea-mcp",
@@ -31,9 +32,15 @@ app = typer.Typer(
 def _global_options(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show version and exit."),
+    output_budget: int = typer.Option(
+        0,
+        "--output-budget",
+        help="Write oversized JSON to a file and print a summary (bytes; 0 disables).",
+    ),
 ) -> None:
     """Global options shared by every command."""
 
+    set_output_budget(output_budget or int(os.environ.get("REA_CLI_MAX_RESPONSE_BYTES", "0") or 0))
     if version:
         from .. import __version__
 
@@ -49,9 +56,15 @@ def _session() -> tuple[BinarySession, AppConfig]:
     return create_binary_session(config), config
 
 
-def _run(operation: str, path: str, provider: str | None, parameters: dict[str, Any]) -> None:
+def _run(
+    operation: str,
+    path: str,
+    provider: str | None,
+    parameters: dict[str, Any],
+    format_hint: str | None = None,
+) -> None:
     session, _config = _session()
-    opened = session.open(path, provider_id=provider)
+    opened = session.open(path, provider_id=provider, format_hint=format_hint)  # type: ignore[arg-type]
     if not opened.ok:
         fail(opened.error)
     result = session.execute(operation, parameters)
@@ -98,6 +111,23 @@ def _run_runtime(operation: str, subject: str, parameters: dict[str, Any]) -> No
     fail(AnalysisInputError(operation=operation, message=f"no provider supports {operation}"))
 
 
+@app.command("inspect-byte-entropy")
+def inspect_byte_entropy(
+    path: str = typer.Argument(...),
+    block_size: int = typer.Option(4096, "--block-size"),
+    offset: int = typer.Option(0, "--offset"),
+    length: int | None = typer.Option(None, "--length"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """File and block byte entropy."""
+    _run(
+        "inspect_byte_entropy",
+        path,
+        provider,
+        {"block_size": block_size, "offset": offset, "length": length},
+    )
+
+
 @app.command("inspect-binary-layout")
 def inspect_binary_layout(
     path: str = typer.Argument(..., help="Target ELF/PE/Mach-O path."),
@@ -105,6 +135,15 @@ def inspect_binary_layout(
 ) -> None:
     """Sections, segments, symbols and mitigation candidates."""
     _run("inspect_binary_layout", path, provider, {})
+
+
+@app.command("inspect-elf-notes")
+def inspect_elf_notes(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """ELF PT_NOTE and SHT_NOTE tables."""
+    _run("inspect_elf_notes", path, provider, {})
 
 
 @app.command("inspect-go-binary")
@@ -128,10 +167,11 @@ def inspect_rust_binary(
 @app.command("inspect-managed-artifact")
 def inspect_managed_artifact(
     path: str = typer.Argument(...),
+    detail: str = typer.Option("complete", "--detail", help="complete or summary."),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Static .NET/CLI metadata identity and table counts."""
-    _run("inspect_managed_artifact", path, provider, {})
+    _run("inspect_managed_artifact", path, provider, {"detail": detail})
 
 
 @app.command("inspect-sqlite-database")
@@ -174,6 +214,77 @@ def identify_flutter_build(
 ) -> None:
     """Flutter AOT snapshot fingerprint per ABI."""
     _run("identify_flutter_build", path, provider, {})
+
+
+@app.command("inspect-apk-signature")
+def inspect_apk_signature(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """APK v1/v2/v3 signature declarations."""
+    _run("inspect_apk_signature", path, provider, {})
+
+
+@app.command("inspect-il2cpp-metadata")
+def inspect_il2cpp_metadata(
+    path: str = typer.Argument(...),
+    binary_path: str | None = typer.Option(None, "--binary"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Unity IL2CPP global-metadata tables and optional native symbol link."""
+    _run(
+        "inspect_il2cpp_metadata",
+        path,
+        provider,
+        {"binary_path": binary_path},
+    )
+
+
+@app.command("inspect-desktop-application")
+def inspect_desktop_application(
+    path: str = typer.Argument(...),
+    detail: str = typer.Option("complete", "--detail", help="complete or summary."),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Desktop application directory triage."""
+    _run("inspect_desktop_application", path, provider, {"detail": detail})
+
+
+@app.command("inspect-gpu-code-objects")
+def inspect_gpu_code_objects(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Static GPU code-object discovery."""
+    _run("inspect_gpu_code_objects", path, provider, {})
+
+
+@app.command("inspect-python-pyc")
+def inspect_python_pyc(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """CPython .pyc header and marshalled code objects."""
+    _run("inspect_python_pyc", path, provider, {})
+
+
+@app.command("inspect-model-artifact")
+def inspect_model_artifact(
+    path: str = typer.Argument(...),
+    hash: str = typer.Option("header", "--hash", help="header or full."),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """GGUF/safetensors header inventory."""
+    _run("inspect_model_artifact", path, provider, {"hash": hash})
+
+
+@app.command("inspect-erlang-beam")
+def inspect_erlang_beam(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Erlang BEAM IFF chunks, atoms, exports and imports."""
+    _run("inspect_erlang_beam", path, provider, {})
 
 
 @app.command("inspect-wasm-artifact")
@@ -278,6 +389,31 @@ def function(
     _run("function", path, provider, {"function": function, "limit": limit})
 
 
+@app.command("decompile-managed-csharp")
+def decompile_managed_csharp(
+    path: str = typer.Argument(...),
+    type: str = typer.Option(..., "--type"),
+    method: str | None = typer.Option(None, "--method"),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(500, "--limit"),
+    max_bytes: int = typer.Option(64000, "--max-bytes"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Optional C# decompilation through ilspycmd."""
+    _run(
+        "decompile_managed_csharp",
+        path,
+        provider,
+        {
+            "type": type,
+            "method": method,
+            "offset": offset,
+            "limit": limit,
+            "max_bytes": max_bytes,
+        },
+    )
+
+
 @app.command("decompile")
 def decompile(
     path: str = typer.Argument(...),
@@ -305,32 +441,134 @@ def xrefs(
     path: str = typer.Argument(...),
     address: str | None = typer.Option(None, "--address"),
     function: str = typer.Option("main", "--function"),
+    raw_image: bool = typer.Option(False, "--raw-image"),
+    target: str | None = typer.Option(None, "--target"),
+    base: str | None = typer.Option(None, "--base"),
+    entry: str | None = typer.Option(None, "--entry"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Cross-references to an address or function."""
-    _run("xrefs", path, provider, {"address": address, "function": function})
+    _run(
+        "xrefs",
+        path,
+        provider,
+        {
+            "address": address,
+            "function": function,
+            "target": target,
+            "base": base,
+            "entry": entry,
+        },
+        format_hint="raw-binary" if raw_image else None,
+    )
 
 
 @app.command("inspect-managed-members")
 def inspect_managed_members(
     path: str = typer.Argument(...),
-    offset: int = typer.Option(0, "--offset"),
-    limit: int = typer.Option(256, "--limit"),
+    offset: int = typer.Option(0, "--offset", help="Type page offset."),
+    limit: int = typer.Option(256, "--limit", help="Type page size."),
+    method_offset: int = typer.Option(0, "--method-offset"),
+    method_limit: int = typer.Option(64, "--method-limit"),
+    type_names: list[str] = typer.Option([], "--type", help="Exact declaring type full name."),
+    detail: str = typer.Option("complete", "--detail", help="complete or summary."),
+    include_bodies: bool | None = typer.Option(None, "--bodies/--no-bodies"),
+    evidence_bundle: str | None = typer.Option(
+        None, "--evidence-bundle", help="Write the complete parent Evidence to this new file."
+    ),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
-    """Managed assembly member names and counts."""
-    _run("inspect_managed_members", path, provider, {"offset": offset, "limit": limit})
+    """Managed assembly members, signatures, fields and CIL anchors."""
+    if detail not in ("complete", "summary"):
+        fail(
+            AnalysisInputError(
+                operation="inspect_managed_members", message="detail must be complete or summary"
+            )
+        )
+    if detail == "summary" and evidence_bundle is None:
+        fail(
+            AnalysisInputError(
+                operation="inspect_managed_members",
+                message="summary delivery requires --evidence-bundle so the complete parent Evidence remains available",
+            )
+        )
+    session, _config = _session()
+    opened = session.open(path, provider_id=provider)
+    if not opened.ok:
+        fail(opened.error)
+    result = session.execute(
+        "inspect_managed_members",
+        {
+            "offset": offset,
+            "limit": limit,
+            "method_offset": method_offset,
+            "method_limit": method_limit,
+            "type_names": list(type_names) or None,
+            "detail": "complete",
+            "include_bodies": include_bodies,
+        },
+    )
+    if not result.ok:
+        fail(result.error)
+    payload = result.value.model_dump()
+    receipt = None
+    if evidence_bundle is not None:
+        destination = Path(evidence_bundle)
+        if destination.exists():
+            fail(
+                AnalysisInputError(
+                    operation="inspect_managed_members",
+                    message=f"evidence bundle already exists: {destination}",
+                )
+            )
+        if not destination.parent.is_dir():
+            fail(
+                AnalysisInputError(
+                    operation="inspect_managed_members",
+                    message=f"evidence bundle parent does not exist: {destination.parent}",
+                )
+            )
+        text = json.dumps(session.export_bundle(), indent=2, ensure_ascii=False)
+        try:
+            destination.write_text(text, encoding="utf-8")
+        except OSError as cause:
+            fail(AnalysisInputError(operation="inspect_managed_members", message=str(cause)))
+        receipt = {"path": str(destination), "bytes": len(text.encode("utf-8"))}
+    if detail == "summary":
+        from ..providers.formats.managed_inspection import summarize_managed_inspection
+
+        summary = summarize_managed_inspection(payload.get("normalized_result") or {})
+        summary["evidence_id"] = payload.get("evidence_id")
+        emit_json(
+            {
+                "summary": summary,
+                "evidence_id": payload.get("evidence_id"),
+                "evidence_bundle": receipt,
+            }
+        )
+    elif receipt is not None:
+        emit_json({"evidence": payload, "evidence_bundle": receipt})
+    else:
+        emit_json(payload)
 
 
 @app.command("disassemble-managed-method")
 def disassemble_managed_method(
     path: str = typer.Argument(...),
-    method: str = typer.Option(..., "--method"),
+    method: str = typer.Option("", "--method"),
     type: str | None = typer.Option(None, "--type"),
+    token: str | None = typer.Option(None, "--token"),
+    rva: str | None = typer.Option(None, "--rva"),
+    signature: str | None = typer.Option(None, "--signature"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Disassemble one managed method's IL body."""
-    _run("disassemble_managed_method", path, provider, {"method": method, "type": type})
+    _run(
+        "disassemble_managed_method",
+        path,
+        provider,
+        {"method": method, "type": type, "token": token, "rva": rva, "signature": signature},
+    )
 
 
 @app.command("inspect-network-capture")
@@ -383,6 +621,90 @@ def inspect_keyed_archive(
 ) -> None:
     """NSKeyedArchiver class and object inventory."""
     _run("inspect_keyed_archive", path, provider, {})
+
+
+@app.command("inspect-pe-certificates")
+def inspect_pe_certificates(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """PE Authenticode certificate table entries."""
+    _run("inspect_pe_certificates", path, provider, {})
+
+
+@app.command("inspect-native-exports")
+def inspect_native_exports(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """PE/ELF export names, ordinals and addresses."""
+    _run("inspect_native_exports", path, provider, {})
+
+
+@app.command("inspect-javascript-webmcp")
+def inspect_javascript_webmcp(
+    path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(200, "--limit"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Static JavaScript WebMCP declaration candidates."""
+    _run(
+        "inspect_javascript_webmcp",
+        path,
+        provider,
+        {"offset": offset, "limit": limit},
+    )
+
+
+@app.command("inspect-javascript-source-maps")
+def inspect_javascript_source_maps(
+    path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(200, "--limit"),
+    line: int | None = typer.Option(None, "--line"),
+    column: int | None = typer.Option(None, "--column"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Static JavaScript source-map inventory and optional position lookup."""
+    _run(
+        "inspect_javascript_source_maps",
+        path,
+        provider,
+        {"offset": offset, "limit": limit, "line": line, "column": column},
+    )
+
+
+@app.command("inspect-javascript-routes")
+def inspect_javascript_routes(
+    path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(200, "--limit"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Static JavaScript route candidates."""
+    _run(
+        "inspect_javascript_routes",
+        path,
+        provider,
+        {"offset": offset, "limit": limit},
+    )
+
+
+@app.command("inspect-javascript-dataflow")
+def inspect_javascript_dataflow(
+    path: str = typer.Argument(...),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(200, "--limit"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Static JavaScript storage/DOM source-to-sink flows."""
+    _run(
+        "inspect_javascript_dataflow",
+        path,
+        provider,
+        {"offset": offset, "limit": limit},
+    )
 
 
 @app.command("inspect-pe-resources")
@@ -817,10 +1139,26 @@ def kuna_decompile(
     path: str = typer.Argument(...),
     function: str | None = typer.Option(None, "--function"),
     max_bytes: int = typer.Option(64000, "--max-bytes"),
+    raw_image: bool = typer.Option(False, "--raw-image"),
+    target: str | None = typer.Option(None, "--target"),
+    base: str | None = typer.Option(None, "--base"),
+    entry: str | None = typer.Option(None, "--entry"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Decompile a function with Kuna."""
-    _run("kuna_decompile", path, provider, {"function": function, "max_bytes": max_bytes})
+    _run(
+        "kuna_decompile",
+        path,
+        provider,
+        {
+            "function": function,
+            "max_bytes": max_bytes,
+            "target": target,
+            "base": base,
+            "entry": entry,
+        },
+        format_hint="raw-binary" if raw_image else None,
+    )
 
 
 @app.command("ghidra-analyze")
@@ -1462,10 +1800,20 @@ def list_segments(
 def list_strings(
     path: str = typer.Argument(...),
     limit: int = typer.Option(500, "--limit"),
+    raw_image: bool = typer.Option(False, "--raw-image"),
+    target: str | None = typer.Option(None, "--target"),
+    base: str | None = typer.Option(None, "--base"),
+    entry: str | None = typer.Option(None, "--entry"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """List strings."""
-    _run("list_strings", path, provider, {"limit": limit})
+    _run(
+        "list_strings",
+        path,
+        provider,
+        {"limit": limit, "target": target, "base": base, "entry": entry},
+        format_hint="raw-binary" if raw_image else None,
+    )
 
 
 @app.command("list-names")
@@ -1482,10 +1830,20 @@ def list_names(
 def list_procedures(
     path: str = typer.Argument(...),
     limit: int = typer.Option(500, "--limit"),
+    raw_image: bool = typer.Option(False, "--raw-image"),
+    target: str | None = typer.Option(None, "--target"),
+    base: str | None = typer.Option(None, "--base"),
+    entry: str | None = typer.Option(None, "--entry"),
     provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """List procedures."""
-    _run("list_procedures", path, provider, {"limit": limit})
+    _run(
+        "list_procedures",
+        path,
+        provider,
+        {"limit": limit, "target": target, "base": base, "entry": entry},
+        format_hint="raw-binary" if raw_image else None,
+    )
 
 
 @app.command("list-bookmarks")
@@ -2218,9 +2576,10 @@ def inspect_web_page(
 @app.command("inspect-web-event-listeners")
 def inspect_web_event_listeners(
     url: str = typer.Option(..., "--url"),
+    selector: str | None = typer.Option(None, "--selector"),
 ) -> None:
-    """Inspect inline handlers and addEventListener use."""
-    _run_runtime("inspect_web_event_listeners", url, {"url": url})
+    """Inspect inline handlers and native listener source locations."""
+    _run_runtime("inspect_web_event_listeners", url, {"url": url, "selector": selector})
 
 
 @app.command("observe-web-execution")
@@ -2288,12 +2647,25 @@ def capture_browser_scenario(
 def capture_electron_scenario(
     endpoint: str | None = typer.Option(None, "--endpoint"),
     steps_json: str | None = typer.Option(None, "--steps-json"),
+    app: str | None = typer.Option(None, "--app"),
+    executable: str | None = typer.Option(None, "--executable"),
+    port: int = typer.Option(0, "--port"),
+    launch_arg: list[str] = typer.Option([], "--launch-arg"),
+    launch_timeout: float = typer.Option(20.0, "--launch-timeout"),
 ) -> None:
     """Run an Electron/CDP scenario."""
     _run_runtime(
         "capture_electron_scenario",
         "cdp",
-        {"endpoint": endpoint, "steps": json.loads(steps_json) if steps_json else None},
+        {
+            "endpoint": endpoint,
+            "steps": json.loads(steps_json) if steps_json else None,
+            "app": app,
+            "executable": executable,
+            "port": port,
+            "launch_args": launch_arg,
+            "launch_timeout": launch_timeout,
+        },
     )
 
 
@@ -2369,6 +2741,30 @@ def trace_web_source_location(
     """Find a symbol in a source file."""
     _run_runtime(
         "trace_web_source_location", source_url, {"source_url": source_url, "symbol": symbol}
+    )
+
+
+@app.command("invoke-webmcp-tool")
+def invoke_webmcp_tool(
+    url: str = typer.Option(..., "--url"),
+    name: str = typer.Option(..., "--name"),
+    arguments: str = typer.Option("{}", "--arguments", help="JSON object passed to the handler."),
+) -> None:
+    """Explicitly invoke a registered WebMCP tool."""
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError as cause:
+        fail(AnalysisInputError(operation="invoke_webmcp_tool", message=str(cause)))
+    if not isinstance(parsed, dict):
+        fail(
+            AnalysisInputError(
+                operation="invoke_webmcp_tool", message="arguments must be a JSON object"
+            )
+        )
+    _run_runtime(
+        "invoke_webmcp_tool",
+        url,
+        {"url": url, "name": name, "arguments": parsed},
     )
 
 
@@ -2534,6 +2930,7 @@ def inspect_evidence_bundle(
     paths: list[str] = typer.Option([], "--path"),
     property_keys: list[str] = typer.Option([], "--property-key"),
     evidence_id: str | None = typer.Option(None, "--evidence-id"),
+    collection: str | None = typer.Option(None, "--collection"),
 ) -> None:
     """Project a saved Evidence bundle."""
     projected = load_view(
@@ -2544,6 +2941,7 @@ def inspect_evidence_bundle(
         paths=list(paths) or None,
         property_keys=list(property_keys) or None,
         evidence_id=evidence_id,
+        collection=collection,
         budget_bytes=AppConfig().mcp_max_response_bytes,
     )
     if not projected.ok:
@@ -2645,6 +3043,22 @@ def extract_artifact(
     from ..application import cli_compat
 
     _compat(lambda: cli_compat.extract_artifact(path, output, overwrite=overwrite))
+
+
+@app.command("match-native-functions")
+def match_native_functions(
+    left: str = typer.Argument(...),
+    right: str = typer.Argument(...),
+    query: str | None = typer.Option(None, "--query"),
+    limit: int = typer.Option(100, "--limit"),
+) -> None:
+    """Match exact native export names between two binaries."""
+    from ..application.native_matching import match_native_functions as _match
+
+    try:
+        emit_json(_match(left, right, query, limit))
+    except Exception as cause:
+        fail(AnalysisInputError(operation="match_native_functions", message=str(cause)))
 
 
 @app.command("compare-wasm-interfaces")
@@ -2846,13 +3260,14 @@ def inspect_analysis_view(
     view: str = typer.Option(
         "summary",
         "--view",
-        help="summary | record | page | environment-manifest | javascript-facts | javascript",
+        help="summary | record | page | environment-manifest | javascript-facts | javascript | managed | managed-members | desktop-application",
     ),
     offset: int = typer.Option(0, "--offset"),
     limit: int = typer.Option(64, "--limit"),
     paths: list[str] = typer.Option([], "--path"),
     property_keys: list[str] = typer.Option([], "--property-key"),
     evidence_id: str | None = typer.Option(None, "--evidence-id"),
+    collection: str | None = typer.Option(None, "--collection"),
 ) -> None:
     """Project a saved Evidence record or bundle."""
     projected = load_view(
@@ -2863,6 +3278,7 @@ def inspect_analysis_view(
         paths=list(paths) or None,
         property_keys=list(property_keys) or None,
         evidence_id=evidence_id,
+        collection=collection,
         budget_bytes=AppConfig().mcp_max_response_bytes,
     )
     if not projected.ok:
@@ -2894,12 +3310,151 @@ def evidence_import(source: str = typer.Argument(...)) -> None:
 
 
 @app.command("mcp")
-def mcp() -> None:
-    """Run the MCP server over stdio."""
-    from ..server.app import run_mcp_server
+def mcp(
+    transport: str = typer.Option("stdio", "--transport", help="stdio or streamable-http."),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    path: str = typer.Option("/mcp", "--path", help="Streamable HTTP endpoint path."),
+) -> None:
+    """Run the MCP server over stdio or opt-in streamable HTTP."""
+    from ..server.app import run_mcp_http_server, run_mcp_server
 
+    if transport not in ("stdio", "streamable-http"):
+        fail(
+            AnalysisInputError(
+                operation="mcp",
+                message="transport must be stdio or streamable-http",
+            )
+        )
     session, config = _session()
-    run_mcp_server(session, config)
+    if transport == "stdio":
+        run_mcp_server(session, config)
+    else:
+        run_mcp_http_server(session, config, host=host, port=port, path=path)
+
+
+@app.command("environment-export")
+def environment_export(
+    manifest: str = typer.Argument(..., help="environment-manifest Evidence JSON."),
+    evidence: str = typer.Argument(..., help="Parent capture Evidence JSON."),
+    directory: str = typer.Argument(..., help="New bundle directory."),
+    name: str | None = typer.Option(None, "--name"),
+    package_tarball: str | None = typer.Option(None, "--package-tarball"),
+) -> None:
+    """Export an agent environment bundle from manifest and capture Evidence."""
+    from ..application.environment.bundle import write_environment_bundle
+    from ..application.environment.workflow import prepare_environment
+
+    package = (
+        {"kind": "tarball", "path": package_tarball}
+        if package_tarball
+        else {"kind": "registry", "specifier": "rea-agents"}
+    )
+    prepared = prepare_environment(
+        _read_json(manifest), _read_json(evidence), name=name, package_source=package
+    )
+    if not prepared.ok:
+        fail(prepared.error)
+    written = write_environment_bundle(
+        prepared.value.bundle,
+        directory,
+        manifest_bytes=Path(manifest).read_bytes(),
+        evidence_bytes=Path(evidence).read_bytes(),
+        package_tarball=package_tarball,
+    )
+    if not written.ok:
+        fail(written.error)
+    emit_json(
+        {
+            "status": "exported",
+            "directory": str(Path(directory).expanduser()),
+            "name": prepared.value.bundle.name,
+            "tool_count": prepared.value.bundle.tool_count,
+            "state": prepared.value.bundle.state,
+            "files": written.value,
+        }
+    )
+
+
+@app.command("environment-serve")
+def environment_serve(
+    manifest: str = typer.Argument(..., help="environment-manifest Evidence JSON."),
+    evidence: str = typer.Argument(..., help="Parent capture Evidence JSON."),
+    replay_only: bool = typer.Option(False, "--replay-only"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(18765, "--port"),
+) -> None:
+    """Serve an agent environment over streamable HTTP."""
+    from ..application.environment.serve import serve_environment
+    from ..application.environment.workflow import prepare_environment
+
+    prepared = prepare_environment(_read_json(manifest), _read_json(evidence))
+    if not prepared.ok:
+        fail(prepared.error)
+    serve_environment(
+        prepared.value.source,
+        name=prepared.value.bundle.name,
+        host=host,
+        port=port,
+        store=None if replay_only else prepared.value.store,
+    )
+
+
+@app.command("environment-compare")
+def environment_compare(
+    manifest: str = typer.Argument(..., help="environment-manifest Evidence JSON."),
+    evidence: str = typer.Argument(..., help="Parent capture Evidence JSON."),
+    probe: list[str] = typer.Option(..., "--probe", help="Probe capture Evidence JSON."),
+) -> None:
+    """Compare replay answers with one or more probe captures."""
+    from ..application.environment.compare import compare_environment
+    from ..application.environment.source import load_environment_source, load_probe_exchanges
+
+    loaded = load_environment_source(_read_json(manifest), _read_json(evidence))
+    if not loaded.ok:
+        fail(loaded.error)
+    rows = []
+    for path in probe:
+        rows.extend(load_probe_exchanges(_read_json(path)))
+    emit_json(compare_environment(loaded.value, rows))
+
+
+@app.command(
+    "upstream",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def upstream(ctx: typer.Context, args: list[str] = typer.Argument(None)) -> None:
+    """Run the caller-installed upstream Node CLI for features not yet ported."""
+    import subprocess
+
+    root = os.environ.get("REA_UPSTREAM_CLI")
+    if not root:
+        candidate = (
+            Path(__file__).resolve().parents[3]
+            / "vendor"
+            / "tools"
+            / "rea-upstream-node"
+            / "node_modules"
+            / "rea-agents"
+        )
+        if (candidate / "scripts" / "rea.mjs").is_file():
+            root = str(candidate)
+    if not root:
+        fail(
+            AnalysisInputError(
+                operation="upstream",
+                message="Set REA_UPSTREAM_CLI to an installed rea-agents package directory.",
+            )
+        )
+    script = Path(root) / "scripts" / "rea.mjs"
+    if not script.is_file():
+        fail(AnalysisInputError(operation="upstream", message=f"upstream CLI not found: {script}"))
+    command = list(args) if args else list(ctx.args)
+    try:
+        proc = subprocess.run(["node", str(script), *command], check=False)
+    except OSError as cause:
+        fail(AnalysisInputError(operation="upstream", message=str(cause)))
+    raise typer.Exit(code=proc.returncode)
 
 
 @app.command("compare")
@@ -2925,9 +3480,25 @@ def capture_process(
 
 
 @app.command("doctor")
-def doctor() -> None:
+def doctor(
+    required: str | None = typer.Option(
+        None, "--required", help="Comma-separated provider ids required for this check."
+    ),
+    profile: str | None = typer.Option(
+        None, "--profile", help="Readiness profile: core, powerbi, android or web."
+    ),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero when required providers are missing."
+    ),
+) -> None:
     """Report provider and external-tool readiness."""
-    emit_json(doctor_report(build_providers()))
+    required_ids = (
+        [item.strip() for item in required.split(",") if item.strip()] if required else None
+    )
+    report = doctor_report(build_providers(), required=required_ids, profile=profile)
+    emit_json(report)
+    if strict and not report["healthy_required"]:
+        raise typer.Exit(code=1)
 
 
 def _declared_operations(session: BinarySession) -> list[str]:
@@ -2955,3 +3526,20 @@ def _load_record(source: str) -> Any:
 
 
 __all__ = ["app"]
+
+
+@app.command("completions")
+def completions(
+    shell: str = typer.Argument(..., help="bash, zsh, fish or powershell."),
+) -> None:
+    """Generate a shell completion script."""
+    import click.shell_completion
+    import typer.main
+
+    completion_class = click.shell_completion.get_completion_class(shell.lower())
+    if completion_class is None:
+        typer.echo(f"unsupported shell: {shell}", err=True)
+        raise typer.Exit(2)
+    command = typer.main.get_command(app)
+    completion = completion_class(command, {}, "rea", "_REA_COMPLETE")
+    typer.echo(completion.source())

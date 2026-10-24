@@ -1014,7 +1014,7 @@ def _pinvoke_rows(path: str) -> list[dict[str, Any]] | None:
     parsed = _metadata_streams(data, pe)
     if parsed is None:
         return None
-    return parse_pinvoke(data, parsed[1])
+    return parse_pinvoke(data, parsed[1], parsed[2])
 
 
 def inspect_managed_native_boundaries_for_bytes(data: bytes) -> dict[str, Any]:
@@ -1027,7 +1027,7 @@ def inspect_managed_native_boundaries_for_bytes(data: bytes) -> dict[str, Any]:
     if pe is not None and pe.has_clr:
         parsed = _metadata_streams(data, pe)
         if parsed is not None:
-            pinvoke = parse_pinvoke(data, parsed[1])
+            pinvoke = parse_pinvoke(data, parsed[1], parsed[2])
     return {
         "pinvoke": pinvoke or [],
         "pinvoke_count": len(pinvoke or []),
@@ -1047,7 +1047,7 @@ def verify_managed_native_boundaries_for_bytes(
     if pe is not None and pe.has_clr:
         parsed = _metadata_streams(data, pe)
         if parsed is not None:
-            pinvoke = parse_pinvoke(data, parsed[1]) or []
+            pinvoke = parse_pinvoke(data, parsed[1], parsed[2]) or []
     declared = {str(item.get("method")) for item in pinvoke if item.get("method")} | {
         str(item.get("entry_point")) for item in pinvoke if item.get("entry_point")
     }

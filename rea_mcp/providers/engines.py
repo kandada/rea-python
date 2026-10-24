@@ -1545,11 +1545,31 @@ def _kuna_records(payload: Any) -> list[dict[str, Any]]:
 
 
 def _kuna_address(record: dict[str, Any]) -> str | None:
-    for key in ("address", "addr", "ea", "start", "entry", "offset"):
+    for key in ("address_hex", "address", "addr", "ea", "start", "entry", "offset"):
         value = record.get(key)
-        if isinstance(value, (str, int)):
-            return str(value)
+        if isinstance(value, int):
+            return hex(value)
+        if isinstance(value, str) and value:
+            return value
     return None
+
+
+def _kuna_raw_args(
+    target: BinaryTarget, parameters: dict[str, Any], *, include_entry: bool = True
+) -> list[str]:
+    if target.format != "raw-binary":
+        return []
+    raw_target = parameters.get("target") or parameters.get("raw_target") or "x86:LE:64:default"
+    base = parameters.get("base") or parameters.get("base_address") or "0x0"
+    arguments = ["--raw-image", "--target", str(raw_target), "--base", str(base)]
+    if include_entry:
+        entry = parameters.get("entry")
+        address = parameters.get("address")
+        if entry is not None:
+            arguments.extend(["--entry", str(entry)])
+        elif address is not None:
+            arguments.extend(["--addr", str(address)])
+    return arguments
 
 
 def _kuna_name(record: dict[str, Any]) -> str | None:
@@ -1570,11 +1590,42 @@ def _same_address(left: str, right: str) -> bool:
     return bool(normalize(left) == normalize(right))
 
 
+def _kuna_function_slice(text: str, function: str) -> str | None:
+    label = re.compile(rf"(?m)^{re.escape(function)}:\s*;")
+    match = label.search(text)
+    if match is None:
+        return None
+    start = text.rfind("\n", 0, match.start()) + 1
+    following = re.compile(r"(?m)^[^\s;][^:\n]*:\s*;")
+    next_match = following.search(text, match.end())
+    end = next_match.start() if next_match is not None else len(text)
+    return text[start:end].strip("\n") + "\n"
+
+
 class KunaProvider(_CliEngine):
     provider_id = "kuna"
     provider_name = "REA-Python Kuna static analysis"
     tool_names = ()
     env_var = "REA_KUNA_COMMAND"
+
+    def _resolution(self) -> ToolResolution:
+        resolution = super()._resolution()
+        if resolution.available:
+            return resolution
+        for root in (
+            Path(os.environ.get("REA_KUNA_HOME", "")),
+            Path.cwd(),
+            Path(__file__).resolve().parents[3],
+        ):
+            if not str(root) or not root.is_dir():
+                continue
+            matches = sorted(
+                root.glob("vendor/tools/kuna-*/kuna-*/kuna"),
+                reverse=True,
+            )
+            if matches:
+                return resolve_shell_command(str(matches[0]))
+        return resolution
 
     def capabilities(self) -> tuple[CapabilityDescriptor, ...]:
         descriptors = []
@@ -1594,7 +1645,7 @@ class KunaProvider(_CliEngine):
         return tuple(descriptors)
 
     def supports(self, target: BinaryTarget) -> TargetSupport:
-        if target.format in ("elf", "pe", "mach-o", "mach-o-universal"):
+        if target.format in ("elf", "pe", "mach-o", "mach-o-universal", "raw-binary"):
             return TargetSupport("supported")
         return TargetSupport(
             "unsupported", reason="Kuna requires a native binary", code="target_format_unsupported"
@@ -1618,14 +1669,22 @@ class KunaProvider(_CliEngine):
                 AnalysisExecution(result={"documents": [target.path]}, provider=self.identity())
             )
         if operation == "procedure_assembly":
-            return self._assembly(command, target.path, parameters, operation)
+            return self._assembly(
+                command,
+                target.path,
+                parameters,
+                operation,
+                _kuna_raw_args(target, parameters),
+            )
         if operation in (
             "list_procedures",
             "search_procedures",
             "procedure_address",
             "address_name",
         ):
-            inventory = self._inventory(command, target.path, operation)
+            inventory = self._inventory(
+                command, target.path, operation, _kuna_raw_args(target, parameters)
+            )
             if not inventory.ok:
                 return inventory
             records = _kuna_records(inventory.value)
@@ -1691,6 +1750,7 @@ class KunaProvider(_CliEngine):
                 "--termination",
                 "any",
                 "--no-xrefs",
+                *_kuna_raw_args(target, parameters),
             ]
             cached = self._cached(command, target.path, "strings", argv, operation)
             if not cached.ok:
@@ -1716,7 +1776,9 @@ class KunaProvider(_CliEngine):
                 )
             return ok(AnalysisExecution(result={"strings": payload}, provider=self.identity()))
         if operation in ("xrefs", "procedure_callers"):
-            address = self._resolve_address(command, target.path, parameters, operation)
+            address = self._resolve_address(
+                command, target.path, parameters, operation, _kuna_raw_args(target, parameters)
+            )
             if not address.ok:
                 return address
             argv = [
@@ -1726,6 +1788,7 @@ class KunaProvider(_CliEngine):
                 "--to",
                 address.value,
                 "--json",
+                *_kuna_raw_args(target, parameters),
             ]
             result = self._run(argv, operation)
             if not result.ok:
@@ -1767,7 +1830,9 @@ class KunaProvider(_CliEngine):
                 )
             )
         # pseudocode / analyze_function / kuna_decompile
-        address = self._resolve_address(command, target.path, parameters, operation)
+        address = self._resolve_address(
+            command, target.path, parameters, operation, _kuna_raw_args(target, parameters)
+        )
         if not address.ok:
             return address
         argv = [
@@ -1776,6 +1841,7 @@ class KunaProvider(_CliEngine):
             target.path,
             address.value,
             "--addr",
+            *_kuna_raw_args(target, parameters, include_entry=False),
         ]
         result = self._run(argv, operation)
         if not result.ok:
@@ -1841,13 +1907,17 @@ class KunaProvider(_CliEngine):
         return ok(parsed)
 
     def _inventory(
-        self, command: str, target_path: str, operation: str
+        self,
+        command: str,
+        target_path: str,
+        operation: str,
+        raw_args: list[str],
     ) -> Result[Any, AnalysisError]:
         return self._cached(
             command,
             target_path,
             "functions",
-            [*shlex.split(command), "functions", target_path, "--json"],
+            [*shlex.split(command), "functions", target_path, "--json", *raw_args],
             operation,
         )
 
@@ -1857,6 +1927,7 @@ class KunaProvider(_CliEngine):
         target_path: str,
         parameters: dict[str, Any],
         operation: str,
+        raw_args: list[str],
     ) -> Result[AnalysisExecution, AnalysisError]:
         function = str(parameters.get("function") or parameters.get("procedure") or "")
         output = tempfile.mkdtemp(prefix="rea_mcp-kuna-")
@@ -1876,13 +1947,14 @@ class KunaProvider(_CliEngine):
             if not result.ok:
                 return result
             candidates: list[tuple[Path, str]] = []
-            for file in Path(output).rglob("*"):
-                if not file.is_file() or file.suffix.lower() not in (
-                    ".asm",
-                    ".s",
-                    ".txt",
-                    ".json",
-                ):
+            for file in sorted(
+                (item for item in Path(output).rglob("*") if item.is_file()),
+                key=lambda item: (
+                    {".asm": 0, ".s": 1, ".txt": 2, ".json": 3}.get(item.suffix.lower(), 9),
+                    item.as_posix(),
+                ),
+            ):
+                if file.suffix.lower() not in (".asm", ".s", ".txt", ".json"):
                     continue
                 try:
                     text = file.read_text(encoding="utf-8", errors="replace")
@@ -1898,15 +1970,21 @@ class KunaProvider(_CliEngine):
                     )
                 )
             file, text = candidates[0]
+            sliced = _kuna_function_slice(text, function) if function else None
             return ok(
                 AnalysisExecution(
                     result={
                         "function": function or None,
-                        "assembly": text[:200_000],
+                        "assembly": (sliced or text)[:200_000],
                         "source": file.name,
+                        "sliced": sliced is not None,
                     },
                     provider=self.identity(),
-                    limitations=("Assembly is exact Kuna project-export text.",),
+                    limitations=(
+                        "Assembly is exact Kuna project-export text."
+                        if sliced is not None
+                        else "Function label was not found in the project export; the full assembly file is returned.",
+                    ),
                 )
             )
         finally:
@@ -1918,12 +1996,13 @@ class KunaProvider(_CliEngine):
         target_path: str,
         parameters: dict[str, Any],
         operation: str,
+        raw_args: list[str],
     ) -> Result[str, AnalysisError]:
         candidate = parameters.get("address") or parameters.get("function") or "main"
         value = str(candidate)
         if value.startswith(("0x", "0X")) or value.isdigit():
             return ok(value)
-        inventory = self._inventory(command, target_path, operation)
+        inventory = self._inventory(command, target_path, operation, raw_args)
         if not inventory.ok:
             return inventory
         for record in _kuna_records(inventory.value):

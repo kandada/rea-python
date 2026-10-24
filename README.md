@@ -32,11 +32,11 @@ You must legally obtain and be authorized to use commercial tools, including IDA
 
 rea-python is a provider-neutral reverse-engineering engine that returns traceable, evidence-carrying, reusable results, exposed through a shared CLI and MCP (Model Context Protocol) server. Its design follows the ideas behind [morluto/rea](https://github.com/morluto/rea), including the Evidence model: every result carries its identity, confidence, authority, limitations, and unresolved unknowns, so an AI agent (or a person) can reason honestly instead of trusting a bare answer.
 
-> Status: **alpha (0.1.7)** — full original CLI/MCP surface (169 tool names, 153 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
+> Status: **alpha (0.1.51)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (265 MCP tools, 289 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
 
 ## Upstream sync
 
-rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.7** it matches the **6.7.0** tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
+rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.51** it matches the **6.7.0** upstream tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
 
 - Apktool localized string tables: repeatable `--locales`, `--locale`, `--string-tables-only`
 - JADX whole-operation deadline: `REA_JADX_OPERATION_TIMEOUT_MS`
@@ -47,7 +47,7 @@ rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.7**
 - Prompt process cancellation with partial output; ASAR integrity observations; DMG inspection and read-only extraction
 - Universal (fat) Mach-O inspection, code-signature metadata, and address-mapped byte tools
 
-Known depth gaps vs upstream: full Kuna project-export reuse, Electron inspector/listener-ownership refinements, and exact upstream raw-image preparation semantics.
+Known depth gaps vs upstream: full Kuna project-export reuse and Electron inspector/listener-ownership refinements.
 
 ## What you can analyze
 
@@ -66,7 +66,7 @@ Known depth gaps vs upstream: full Kuna project-export reuse, Electron inspector
 | WASM modules | Validation, sections, decoded WAT | built-in (WAT needs WABT) |
 | Property lists | XML/binary plist and NSKeyedArchiver inventory | built-in |
 | HarmonyOS HAP | Package facts and entry hashes | built-in |
-| JavaScript / Electron | Module graph and IPC boundaries (directory or ASAR) | built-in |
+| JavaScript / Electron | Module graph, IPC boundaries, routes, source maps, WebMCP, storage/DOM dataflow (directory or ASAR) | built-in |
 | PE resources | Resource types and counts | built-in |
 | Reference source | Source-tree inventory: files, sizes, digests, languages | built-in |
 | EVM bytecode | Dispatch selectors, arguments, mutability | evmole |
@@ -83,6 +83,7 @@ Known depth gaps vs upstream: full Kuna project-export reuse, Electron inspector
 | Mach-O signatures | CodeDirectory, CDHash, team/identifier, entitlements | built-in |
 | Byte tools | Address-mapped reads and byte-pattern search | built-in |
 | Application graphs | Android components/permissions, Apple bundles, Harmony abilities | built-in |
+| Agent environments | Capture manifest/replay, derived state, compare, writes, bundle export and HTTP serving | built-in |
 | Digital signals (VCD) | Signal inventory and 8N1 UART decode | built-in |
 | Crash dumps | GDB/pwndbg register and backtrace summary | built-in |
 | Apple bundles | Entitlements, keyed archive, Interface Builder, asset catalog | built-in |
@@ -98,7 +99,30 @@ Known depth gaps vs upstream: full Kuna project-export reuse, Electron inspector
 | CDP runtime (Chrome/Electron) | Target inventory, live network metadata | built-in HTTP (websocket-client for capture) |
 | Recorded crashes | Register/signal extraction | REA_PWNTOOLS_PYTHON + pwntools |
 
+Engine tools can live on an external volume. Kuna is auto-detected under `vendor/tools/kuna-*/kuna-*/kuna`, or set `REA_KUNA_COMMAND` to the absolute binary. Raw images are selected with `raw_image`/`--raw-image` plus `target`/`base`/`entry`:
+
+```bash
+rea list-procedures firmware.bin --raw-image --target x86:LE:64:default --base 0x100000000 --entry 0x100000010
+rea kuna-decompile firmware.bin --raw-image --target x86:LE:64:default --base 0x100000000 --entry 0x100000010 --function sub_100000010
+```
+
+An Electron runtime is auto-detected under `vendor/tools/electron/node_modules/.bin/electron` (or `REA_ELECTRON_EXECUTABLE`). `capture-electron-scenario --app DIR` launches the app, discovers a free CDP port, runs the scenario, and terminates the process:
+
+```bash
+rea capture-electron-scenario --app ./electron-app --steps-json '[{"action":"screenshot","path":"shot.png"}]'
+```
+
 External-tool providers are caller-supplied: rea-mcp never installs them and reports an actionable reason when one is missing (`rea-mcp doctor`). Cross-cutting tools: `compare` / `compare-network-captures` / `compare-web-captures` / `compare-managed-members` (target and Evidence diffs), `build-reconstruction-obligation-ledger` / `evaluate-reconstruction-coverage` (reconstruction), `capture-process` (bounded runtime capture), `doctor` (readiness), `setup` (client registration, plus `--write-all` and `--install-skill`), `update`, and `evidence-export` / `evidence-import` / `inspect-analysis-view` (portable Evidence).
+
+Agent environments are an extension beyond the 6.7.0 upstream surface. From an `environment-manifest` Evidence record and its parent capture:
+
+```bash
+rea environment-compare manifest.json capture.json --probe probe.json
+rea environment-export manifest.json capture.json ./bundle
+rea environment-serve manifest.json capture.json --port 18765
+```
+
+The exporter derives item/list/document state, writes a Dockerfile and verifier, and the server exposes manifest tools plus replay/state/compare tools and `/agentenv/data/{get,list,add,merge,delete,document,reset}`.
 
 All analysis runs locally. rea-mcp never uploads your target.
 
@@ -136,7 +160,11 @@ rea-mcp setup --install-skill <dir>          # install the bundled agent skill
 
 ## Response budgets
 
-MCP results are capped at 512 KiB by default (`REA_MCP_MAX_RESPONSE_BYTES`). Oversized analysis results are retained as Evidence and returned as a compact summary with an `evidence_reference`; use `evidence-export`, `inspect-analysis-view --view record --evidence-id <id>`, or `get-evidence-bundle --full` for the complete data. `inspect-analysis-view`, `inspect-artifact`, `inspect-managed-members`, `inspect-network-capture`, `inspect-android-package`, `inspect-android-class`, `inspect-android-method`, `decompile-android-apk`, `decompile-android-class`, and `analyze-javascript-application` page with `--offset`/`--limit` (JavaScript also has `--module-offset`/`--edge-offset`). Decompilers return a summary-sized preview by default; `--max-bytes` changes the limit and the full text remains in Evidence. `batch-decompile` caps pseudocode at 64 KiB per function (`--max-bytes-per-function 0` disables the cap). Captured web response bodies are capped at 32 KiB each and 512 KiB total; `observe-web-execution --bodies --retain-bodies` keeps the complete bodies in Evidence (up to 8 MiB) while returning bounded previews.
+MCP results are capped at 512 KiB by default (`REA_MCP_MAX_RESPONSE_BYTES`). Oversized analysis results are retained as Evidence and returned as a compact summary with an `evidence_reference`; use `evidence-export`, `inspect-analysis-view --view record --evidence-id <id>`, or `get-evidence-bundle --full` for the complete data. Set a CLI budget with `--output-budget <bytes>`; an oversized CLI result is written to a UTF-8 JSON file and stdout receives a summary plus `output_path`. `inspect-analysis-view`, `inspect-artifact`, `inspect-managed-members`, `inspect-network-capture`, `inspect-android-package`, `inspect-android-class`, `inspect-android-method`, `decompile-android-apk`, `decompile-android-class`, and `analyze-javascript-application` page with `--offset`/`--limit` (JavaScript also has `--module-offset`/`--edge-offset`). Decompilers return a summary-sized preview by default; `--max-bytes` changes the limit and the full text remains in Evidence. `batch-decompile` caps pseudocode at 64 KiB per function (`--max-bytes-per-function 0` disables the cap). Captured web response bodies are capped at 32 KiB each and 512 KiB total; `observe-web-execution --bodies --retain-bodies` keeps the complete bodies in Evidence (up to 8 MiB) while returning bounded previews.
+
+For managed assemblies, `inspect-managed-members --type <full-name> --detail summary --evidence-bundle <file>` writes the complete parent Evidence and prints identity, selection, counts and coverage. Page individual collections afterwards with `inspect-analysis-view <file> --view managed-members --collection types|fields|methods|member_refs|call_edges|field_accesses|field_initializers|user_strings --offset/--limit`; `inspect-managed-artifact --detail summary` exposes module/MVID, assembly, references, resources and attributes. Additional static providers include `inspect-elf-notes`, `inspect-erlang-beam`, `inspect-pe-certificates`, `inspect-native-exports`, `inspect-javascript-routes`, `inspect-apk-signature`, `inspect-byte-entropy`, `inspect-python-pyc`, `inspect-model-artifact`, `inspect-desktop-application`, `inspect-gpu-code-objects`, `inspect-il2cpp-metadata`, `read-bytes`, `search-bytes` and `address-to-file-offset`. `compare-managed-members` now compares types, fields, methods and nesting by exact type/name/signature identity. Optional C# decompilation is available through `decompile-managed-csharp` when `ilspycmd` is on `PATH` or `REA_ILSPY`/`REA_ILSPY_CMD_PATH` points to it. Managed metadata parsing uses a bounded in-process cache (`REA_MANAGED_CACHE_ENTRIES`, default 8); set it to `0` to disable. `doctor --required dotnet,artifacts,sqlite --strict` (or `--profile powerbi`) separates core readiness from optional engines. `rea mcp --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp` opts into HTTP transport; stdio remains the default.
+
+The optional `rea upstream ...` command forwards to a caller-installed upstream Node package (`REA_UPSTREAM_CLI`) for features not yet ported to Python.
 
 ## Import names
 
