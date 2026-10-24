@@ -151,6 +151,14 @@ def run_owned_process(
     return ok(result)
 
 
+def _kill_group(pid: int, signal_number: int) -> None:
+    killpg = getattr(os, "killpg", None)
+    getpgid = getattr(os, "getpgid", None)
+    if killpg is None or getpgid is None:
+        raise OSError("process groups are unavailable")
+    killpg(getpgid(pid), signal_number)
+
+
 def _terminate_group(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
@@ -158,14 +166,14 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
         _terminate_process(process)
         return
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        _kill_group(process.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         process.terminate()
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            _kill_group(process.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except (ProcessLookupError, PermissionError, OSError):
             process.kill()
         with contextlib.suppress(subprocess.TimeoutExpired):

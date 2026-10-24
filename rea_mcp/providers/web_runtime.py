@@ -202,16 +202,17 @@ def _stop_electron(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
     try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
+        killpg = getattr(os, "killpg", None)
+        if os.name == "posix" and killpg is not None:
+            killpg(process.pid, signal.SIGTERM)
             process.wait(timeout=5)
         else:
             process.terminate()
             process.wait(timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
+            if os.name == "posix" and killpg is not None:
+                killpg(process.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             else:
                 process.kill()
         except OSError:

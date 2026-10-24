@@ -8,8 +8,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from rea_mcp.domain.binary_target import parse_binary_target
 from rea_mcp.providers.hopper import HopperProvider
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="Hopper bridge requires Unix-domain sockets"
+)
 
 
 def _short_socket() -> str:

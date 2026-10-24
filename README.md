@@ -32,11 +32,11 @@ You must legally obtain and be authorized to use commercial tools, including IDA
 
 rea-python is a provider-neutral reverse-engineering engine that returns traceable, evidence-carrying, reusable results, exposed through a shared CLI and MCP (Model Context Protocol) server. Its design follows the ideas behind [morluto/rea](https://github.com/morluto/rea), including the Evidence model: every result carries its identity, confidence, authority, limitations, and unresolved unknowns, so an AI agent (or a person) can reason honestly instead of trusting a bare answer.
 
-> Status: **alpha (0.1.53)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (265 MCP tools, 289 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
+> Status: **alpha (0.1.54)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (265 MCP tools, 289 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
 
 ## Upstream sync
 
-rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.53** it matches the **6.7.0** upstream tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
+rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.54** it matches the **6.7.0** upstream tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
 
 - Apktool localized string tables: repeatable `--locales`, `--locale`, `--string-tables-only`
 - JADX whole-operation deadline: `REA_JADX_OPERATION_TIMEOUT_MS`

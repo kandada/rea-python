@@ -144,8 +144,11 @@ class HopperProvider(AnalysisProvider):
             )
             + b"\n"
         )
+        family = getattr(socket, "AF_UNIX", None)
+        if family is None:
+            return err(ProviderAdapterError(message="Hopper bridge requires a Unix socket"))
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            with socket.socket(family, socket.SOCK_STREAM) as client:
                 client.settimeout(_DEFAULT_TIMEOUT)
                 client.connect(path)
                 client.sendall(payload)

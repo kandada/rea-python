@@ -77,7 +77,11 @@ def _handle(connection: socket.socket) -> None:
 def serve(socket_path: str = _DEFAULT_SOCKET) -> None:
     if os.path.exists(socket_path):
         os.remove(socket_path)
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    family = getattr(socket, "AF_UNIX", None)
+    if family is None:
+        sys.stderr.write("rea_mcp Hopper bridge requires Unix-domain sockets\n")
+        return
+    server = socket.socket(family, socket.SOCK_STREAM)
     server.bind(socket_path)
     server.listen(4)
     sys.stderr.write(f"rea_mcp Hopper bridge listening at {socket_path}\n")
