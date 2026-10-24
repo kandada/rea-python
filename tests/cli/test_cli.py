@@ -164,9 +164,12 @@ def test_mcp_rejects_unknown_transport() -> None:
 
 
 def test_managed_csharp_command_registered() -> None:
-    result = runner.invoke(app, ["decompile-managed-csharp", "--help"])
-    assert result.exit_code == 0
-    assert "--type" in result.stdout
+    import typer.main
+
+    command = typer.main.get_command(app)
+    subcommand = command.commands["decompile-managed-csharp"]
+    options = {option for parameter in subcommand.params for option in parameter.opts}
+    assert {"--type", "--method", "--offset"} <= options
 
 
 def test_environment_export_cli(tmp_path: Path) -> None:

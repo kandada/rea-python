@@ -392,7 +392,7 @@ def function(
 @app.command("decompile-managed-csharp")
 def decompile_managed_csharp(
     path: str = typer.Argument(...),
-    type: str = typer.Option(..., "--type"),
+    type_name: str = typer.Option(..., "--type"),
     method: str | None = typer.Option(None, "--method"),
     offset: int = typer.Option(0, "--offset"),
     limit: int = typer.Option(500, "--limit"),
@@ -405,7 +405,7 @@ def decompile_managed_csharp(
         path,
         provider,
         {
-            "type": type,
+            "type": type_name,
             "method": method,
             "offset": offset,
             "limit": limit,
