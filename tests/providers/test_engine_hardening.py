@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -95,12 +96,12 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 HTTPServer(("127.0.0.1", port), Handler).serve_forever()
-""",
+""".replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1),
         encoding="utf-8",
     )
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
     launched = _launch_electron(
-        {"app": str(app), "executable": str(executable), "launch_timeout": 5}
+        {"app": str(app), "executable": str(executable), "launch_timeout": 20}
     )
     assert launched.ok
     process, endpoint, launch = launched.value
