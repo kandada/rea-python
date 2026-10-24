@@ -1,6 +1,8 @@
 import json
+import os
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from rea_mcp.cli.app import app
@@ -236,6 +238,7 @@ def test_completions_cli() -> None:
     assert "_REA_COMPLETE" in result.stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX shell fixture")
 def test_kuna_raw_image_cli(monkeypatch, tmp_path: Path) -> None:
     log = tmp_path / "kuna-args.txt"
     script = tmp_path / "kuna"

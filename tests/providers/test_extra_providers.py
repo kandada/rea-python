@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+import pytest
 
 from rea_mcp.domain.binary_target import parse_binary_target
 from rea_mcp.providers.android import AndroidProvider
@@ -490,6 +493,7 @@ def test_pcapng_fields(pcapng_dns_file: Path) -> None:
     assert fields["linktypes"] == [1]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX shell fixture")
 def test_pcap_tshark_enrichment(monkeypatch: object, tmp_path: Path, pcap_dns_file: Path) -> None:
     from rea_mcp.providers.pcap import PcapProvider
 
@@ -506,6 +510,7 @@ def test_pcap_tshark_enrichment(monkeypatch: object, tmp_path: Path, pcap_dns_fi
     assert "Protocol Hierarchy" in result.value.result["protocol_hierarchy"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX shell fixture")
 def test_firmware_binwalk_enrichment(
     monkeypatch: object, tmp_path: Path, firmware_file: Path
 ) -> None:

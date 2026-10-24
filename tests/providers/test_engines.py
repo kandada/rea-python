@@ -35,6 +35,8 @@ from rea_mcp.providers.optional_engines import (
 )
 from rea_mcp.providers.rizin import RizinProvider
 
+posix_only = pytest.mark.skipif(os.name == "nt", reason="requires a POSIX shell fixture")
+
 ENGINES: list[AnalysisProvider] = [
     ApktoolProvider(),
     AdbProvider(),
@@ -344,6 +346,7 @@ exit 0
 """
 
 
+@posix_only
 def test_apktool_decode_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, apk_file: Path
 ) -> None:
@@ -359,6 +362,7 @@ def test_apktool_decode_paths(
     assert smali.value.result["resource_files"] >= 1
 
 
+@posix_only
 def test_jadx_decompile_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, apk_file: Path
 ) -> None:
@@ -377,6 +381,7 @@ def test_jadx_decompile_paths(
     assert "class Main" in decompiled.value.result["source"]
 
 
+@posix_only
 def test_adb_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, elf_file: Path) -> None:
     script = _fake_script(tmp_path, "adb", _ADB_FAKE)
     monkeypatch.setenv("REA_ADB_PATH", str(script))
@@ -637,6 +642,7 @@ def test_rizin_debug_session_real() -> None:
     assert closed.ok
 
 
+@posix_only
 def test_apktool_string_tables(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, apk_file: Path
 ) -> None:
@@ -692,6 +698,7 @@ esac
 """
 
 
+@posix_only
 def test_kuna_operations_fake(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, elf_file: Path
 ) -> None:

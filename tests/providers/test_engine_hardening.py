@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -12,7 +13,6 @@ from rea_mcp.providers.engines import KunaProvider, _kuna_address, _kuna_functio
 from rea_mcp.providers.web_runtime import (
     _electron_executable,
     _launch_electron,
-    _stop_electron,
 )
 
 
@@ -53,7 +53,7 @@ def test_electron_launch_rejects_missing_executable_and_app(tmp_path: Path) -> N
     )
     assert not missing_exe.ok
     missing_app = _launch_electron(
-        {"app": str(tmp_path / "missing-app"), "executable": "/bin/true"}
+        {"app": str(tmp_path / "missing-app"), "executable": sys.executable}
     )
     assert not missing_app.ok
 
@@ -70,46 +70,57 @@ def test_electron_launch_reports_early_exit(tmp_path: Path) -> None:
     assert "exited before exposing CDP" in result.error.message
 
 
-@pytest.mark.skipif(os.name == "nt", reason="process-group cleanup uses POSIX signals")
-def test_electron_launch_serves_cdp_and_is_stopped(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="Electron launch fixture uses a POSIX shebang")
+def test_electron_launch_uses_port_and_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     app = tmp_path / "app"
     app.mkdir()
+    arguments_file = tmp_path / "arguments.txt"
     executable = tmp_path / "electron"
     executable.write_text(
         """#!/usr/bin/env python3
+import json
+import os
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
 
-port = 0
-for argument in sys.argv:
-    if argument.startswith("--remote-debugging-port="):
-        port = int(argument.split("=", 1)[1])
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = b'{"Browser": "fake"}' if self.path == "/json/version" else b"[]"
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *args):
-        pass
-
-HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+with open(os.environ["FAKE_ELECTRON_ARGS"], "w", encoding="utf-8") as handle:
+    json.dump(sys.argv, handle)
+time.sleep(30)
 """.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1),
         encoding="utf-8",
     )
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-    launched = _launch_electron(
-        {"app": str(app), "executable": str(executable), "launch_timeout": 20}
+    monkeypatch.setenv("FAKE_ELECTRON_ARGS", str(arguments_file))
+    import rea_mcp.providers.web_runtime as web_runtime
+
+    monkeypatch.setattr(web_runtime, "_http_json", lambda *args, **kwargs: {"Browser": "fake"})
+    launched = web_runtime._launch_electron(
+        {
+            "app": str(app),
+            "executable": str(executable),
+            "port": 9876,
+            "launch_timeout": 5,
+        }
     )
     assert launched.ok
     process, endpoint, launch = launched.value
     try:
-        assert endpoint.startswith("http://127.0.0.1:")
+        assert endpoint == "http://127.0.0.1:9876"
         assert launch["app"] == str(app)
         assert launch["executable"] == str(executable)
         assert launch["pid"] == process.pid
+        assert process.poll() is None
+        for _ in range(50):
+            if arguments_file.is_file():
+                break
+            import time
+
+            time.sleep(0.1)
+        arguments = json.loads(arguments_file.read_text(encoding="utf-8"))
+        assert str(app) in arguments
+        assert "--remote-debugging-port=9876" in arguments
     finally:
-        _stop_electron(process)
+        web_runtime._stop_electron(process)
     assert process.poll() is not None
