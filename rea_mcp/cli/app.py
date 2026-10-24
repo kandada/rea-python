@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 
@@ -3540,6 +3540,6 @@ def completions(
     if completion_class is None:
         typer.echo(f"unsupported shell: {shell}", err=True)
         raise typer.Exit(2)
-    command = typer.main.get_command(app)
+    command = cast("Any", typer.main.get_command(app))
     completion = completion_class(command, {}, "rea", "_REA_COMPLETE")
     typer.echo(completion.source())
