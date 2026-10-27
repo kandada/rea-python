@@ -15,7 +15,7 @@ pytestmark = pytest.mark.mcp
 async def test_lists_full_tool_catalog() -> None:
     async with mcp_client() as client:
         tools = await client.list_tools()
-    assert len(tools) == 265
+    assert len(tools) == 266
     assert {"open_binary", "inspect_binary_layout", "doctor", "compare_evidence"} <= set(tools)
 
 

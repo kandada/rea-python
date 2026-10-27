@@ -16,8 +16,8 @@ _DEFAULT_COMPACT_BUDGET = 13312
 CLIENT_PRESETS: dict[str, dict[str, str]] = {
     "generic": {"input": "full", "output": "full"},
     "claude": {"input": "full", "output": "full"},
-    "cursor": {"input": "compact", "output": "full"},
-    "opencode": {"input": "compact", "output": "full"},
+    "cursor": {"input": "compact", "output": "off"},
+    "opencode": {"input": "compact", "output": "off"},
     "vscode": {"input": "compact", "output": "off"},
     "code": {"input": "compact", "output": "off"},
     "zed": {"input": "compact", "output": "off"},
@@ -47,6 +47,14 @@ class AppConfig(BaseSettings):
     mcp_output_schema_profile: str = Field(
         default="auto",
         description="'full', 'off', or 'auto' (follow the client preset).",
+    )
+    mcp_toolset: str = Field(
+        default="auto",
+        description="Tool exposure preset: auto, core, full, or comma-separated domains.",
+    )
+    mcp_available_only: bool = Field(
+        default=False,
+        description="Hide tools whose declared provider operation is unavailable.",
     )
 
     @property

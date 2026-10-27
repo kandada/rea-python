@@ -37,10 +37,22 @@ def _global_options(
         "--output-budget",
         help="Write oversized JSON to a file and print a summary (bytes; 0 disables).",
     ),
+    filter_output: str | None = typer.Option(
+        None,
+        "--filter-output",
+        help="Comma-separated dotted output paths, e.g. records[0].evidence_id.",
+    ),
+    token_count: bool = typer.Option(
+        False, "--token-count", help="Print only the output token count."
+    ),
 ) -> None:
     """Global options shared by every command."""
 
+    from .output import set_output_filter, set_token_count
+
     set_output_budget(output_budget or int(os.environ.get("REA_CLI_MAX_RESPONSE_BYTES", "0") or 0))
+    set_output_filter(filter_output)
+    set_token_count(token_count)
     if version:
         from .. import __version__
 
@@ -785,9 +797,12 @@ def setup(
     install_skill_dir: str | None = typer.Option(
         None, "--install-skill", help="Directory to install the agent skill into."
     ),
+    mode: str = typer.Option("core", "--mode", help="skill, core, full, or hybrid."),
+    toolset: str | None = typer.Option(None, "--toolset", help="MCP toolset preset."),
+    client: str | None = typer.Option(None, "--client", help="generic, opencode, cursor."),
     overwrite: bool = typer.Option(False, "--overwrite"),
 ) -> None:
-    """Plan or write an MCP client registration, or install the agent skill."""
+    """Plan/write an MCP registration, install the skill, or do both."""
     from ..application.setup import (
         install_skill,
         setup_plan,
@@ -795,25 +810,72 @@ def setup(
         write_registration,
     )
 
-    if write_all is not None:
-        applied = write_all_registrations(write_all, overwrite=overwrite)
-        if not applied.ok:
-            fail(applied.error)
-        emit_json(applied.value)
-        return
-    if install_skill_dir is not None:
+    selected_mode = mode.lower()
+    if selected_mode not in ("skill", "core", "full", "hybrid"):
+        fail(
+            AnalysisInputError(
+                operation="setup", message="mode must be skill, core, full or hybrid"
+            )
+        )
+    selected_toolset = toolset or ("full" if selected_mode == "full" else "core")
+    from ..server.toolsets import resolve_toolset
+
+    try:
+        resolve_toolset(selected_toolset, client=client or "generic")
+    except ValueError as cause:
+        fail(AnalysisInputError(operation="setup", message=str(cause)))
+    if selected_mode == "skill" and install_skill_dir is None:
+        fail(
+            AnalysisInputError(
+                operation="setup",
+                message="--mode skill requires --install-skill <directory>",
+            )
+        )
+    installed = None
+    if selected_mode in ("skill", "hybrid") and install_skill_dir is not None:
         installed = install_skill(install_skill_dir)
         if not installed.ok:
             fail(installed.error)
-        emit_json(installed.value)
+    if selected_mode == "skill":
+        emit_json(installed.value if installed is not None else {})
+        return
+    if write_all is not None:
+        applied = write_all_registrations(write_all, overwrite=overwrite, toolset=selected_toolset)
+        if not applied.ok:
+            fail(applied.error)
+        emit_json(
+            {
+                **applied.value,
+                **({"skill": installed.value} if installed is not None else {}),
+            }
+        )
         return
     if write is None:
-        emit_json(setup_plan())
+        emit_json(
+            {
+                **setup_plan(
+                    toolset=selected_toolset,
+                    client=client or "generic",
+                ),
+                "mode": selected_mode,
+                **({"skill": installed.value} if installed is not None else {}),
+            }
+        )
         return
-    written = write_registration(write, overwrite=overwrite)
+    written = write_registration(
+        write,
+        overwrite=overwrite,
+        toolset=selected_toolset,
+        client=client,
+    )
     if not written.ok:
         fail(written.error)
-    emit_json(written.value)
+    emit_json(
+        {
+            **written.value,
+            **({"skill": installed.value} if installed is not None else {}),
+        }
+    )
 
 
 @app.command("update")
@@ -1333,6 +1395,54 @@ def ida_inspect_provider() -> None:
 def jeb_inspect_provider() -> None:
     """Probe the configured JEB service endpoint."""
     _run_runtime("jeb_inspect_provider", "jeb", {})
+
+
+@app.command("manifest")
+def manifest() -> None:
+    """Print a compact machine-readable command catalog."""
+    import typer.main
+
+    from .. import __version__
+
+    command = cast("Any", typer.main.get_command(app))
+    rows = []
+    for name, subcommand in sorted(command.commands.items()):
+        help_text = (subcommand.help or "").strip().splitlines()
+        rows.append(
+            {
+                "name": name,
+                "help": help_text[0] if help_text else "",
+                "options": sorted(
+                    option
+                    for parameter in subcommand.params
+                    for option in getattr(parameter, "opts", [])
+                ),
+            }
+        )
+    emit_json({"version": __version__, "command_count": len(rows), "commands": rows})
+
+
+@app.command("schema")
+def command_schema(name: str = typer.Argument(..., help="CLI command name.")) -> None:
+    """Print a command's arguments and options as JSON."""
+    import typer.main
+
+    command = cast("Any", typer.main.get_command(app))
+    subcommand = command.commands.get(name)
+    if subcommand is None:
+        fail(AnalysisInputError(operation="schema", message=f"unknown command: {name}"))
+    parameters = []
+    for parameter in subcommand.params:
+        parameters.append(
+            {
+                "name": parameter.name,
+                "opts": list(getattr(parameter, "opts", [])),
+                "required": bool(parameter.required),
+                "default": None if parameter.default is None else str(parameter.default),
+                "type": type(parameter.type).__name__,
+            }
+        )
+    emit_json({"command": name, "help": subcommand.help, "parameters": parameters})
 
 
 @app.command("schema-matrix")
@@ -3240,6 +3350,38 @@ def trace_dylib_resolution(
     )
 
 
+@app.command("triage")
+def triage(
+    path: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+    question: str | None = typer.Option(None, "--question"),
+) -> None:
+    """Run a compact, format-aware target triage."""
+    from ..application.triage import triage_target
+
+    session, _config = _session()
+    result = triage_target(session, path, provider=provider, question=question)
+    if not result.ok:
+        fail(result.error)
+    emit_json(result.value)
+
+
+@app.command("investigate")
+def investigate(
+    path: str = typer.Argument(...),
+    question: str = typer.Option(..., "--question"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Triage a target around one investigation question."""
+    from ..application.triage import triage_target
+
+    session, _config = _session()
+    result = triage_target(session, path, provider=provider, question=question)
+    if not result.ok:
+        fail(result.error)
+    emit_json(result.value)
+
+
 @app.command("providers")
 def providers() -> None:
     """List configured providers and their operations."""
@@ -3315,6 +3457,12 @@ def mcp(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port"),
     path: str = typer.Option("/mcp", "--path", help="Streamable HTTP endpoint path."),
+    toolset: str | None = typer.Option(
+        None, "--toolset", help="auto, core, full, or comma-separated domains."
+    ),
+    available_only: bool = typer.Option(
+        False, "--available-only", help="Hide tools for missing external providers."
+    ),
 ) -> None:
     """Run the MCP server over stdio or opt-in streamable HTTP."""
     from ..server.app import run_mcp_http_server, run_mcp_server
@@ -3327,6 +3475,22 @@ def mcp(
             )
         )
     session, config = _session()
+    selected_toolset = toolset
+    if selected_toolset is None and config.mcp_toolset == "auto" and config.mcp_client == "generic":
+        selected_toolset = "core"
+    from ..server.toolsets import resolve_toolset
+
+    try:
+        resolve_toolset(selected_toolset or config.mcp_toolset, client=config.mcp_client)
+    except ValueError as cause:
+        fail(AnalysisInputError(operation="mcp", message=str(cause)))
+    if selected_toolset is not None or available_only:
+        config = config.model_copy(
+            update={
+                **({"mcp_toolset": selected_toolset} if selected_toolset is not None else {}),
+                **({"mcp_available_only": True} if available_only else {}),
+            }
+        )
     if transport == "stdio":
         run_mcp_server(session, config)
     else:

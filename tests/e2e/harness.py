@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _env() -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
+    env.setdefault("REA_MCP_TOOLSET", "full")
     return env
 
 

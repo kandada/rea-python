@@ -1,0 +1,26 @@
+[
+  {
+    "id": "native",
+    "target_key": "native",
+    "commands": [["triage"], ["inspect-binary-layout"]],
+    "required": ["format", "architecture"]
+  },
+  {
+    "id": "android",
+    "target_key": "android",
+    "commands": [["triage"], ["inspect-android-package"]],
+    "required": ["package"]
+  },
+  {
+    "id": "javascript",
+    "target_key": "javascript",
+    "commands": [["triage"], ["analyze-javascript-application"]],
+    "required": ["module_count"]
+  },
+  {
+    "id": "managed",
+    "target_key": "managed",
+    "commands": [["triage"], ["inspect-managed-artifact"]],
+    "required": ["format"]
+  }
+]

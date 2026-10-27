@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 async def _list_tools() -> list[str]:
-    env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
+    env = dict(os.environ, PYTHONPATH=str(REPO_ROOT), REA_MCP_TOOLSET="full")
     params = StdioServerParameters(command=sys.executable, args=["-m", "rea_mcp", "mcp"], env=env)
     async with (
         stdio_client(params) as (read, write),
@@ -38,7 +38,7 @@ def test_stdio_server_lists_tools() -> None:
         "doctor",
     }
     assert required <= set(names)
-    assert len(names) == 265
+    assert len(names) == 266
 
 
 async def _list_tools_with_tiny_budget() -> str:

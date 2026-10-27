@@ -313,3 +313,76 @@ def test_environment_export_rejects_manifest_parent_mismatch(tmp_path: Path) -> 
     )
     assert result.exit_code != 0
     assert "parent Evidence" in result.output
+
+
+def test_agent_cli_helpers() -> None:
+    filtered = runner.invoke(app, ["--filter-output", "providers[0].id", "providers"])
+    assert filtered.exit_code == 0, filtered.output
+    assert json.loads(filtered.stdout) == {"providers[0].id": "adb"}
+    counted = runner.invoke(app, ["--token-count", "providers"])
+    assert counted.exit_code == 0
+    assert int(counted.stdout.strip()) > 0
+    manifest = runner.invoke(app, ["manifest"])
+    assert manifest.exit_code == 0
+    payload = json.loads(manifest.stdout)
+    assert payload["command_count"] >= 290
+    assert any(row["name"] == "triage" for row in payload["commands"])
+    schema = runner.invoke(app, ["schema", "triage"])
+    assert schema.exit_code == 0
+    assert json.loads(schema.stdout)["command"] == "triage"
+
+
+def test_triage_cli(elf_file: Path) -> None:
+    result = runner.invoke(app, ["triage", str(elf_file), "--question", "what is this?"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "triage"
+    assert payload["target"]["format"] == "elf"
+    assert payload["evidence_ids"]
+
+
+def test_setup_skill_and_opencode_modes(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills"
+    skill = runner.invoke(app, ["setup", "--mode", "skill", "--install-skill", str(skill_dir)])
+    assert skill.exit_code == 0, skill.output
+    assert (skill_dir / "reverse-engineer-anything/SKILL.md").is_file()
+    config = tmp_path / "opencode.json"
+    written = runner.invoke(
+        app,
+        ["setup", "--mode", "core", "--write", str(config), "--toolset", "web"],
+    )
+    assert written.exit_code == 0, written.output
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    assert payload["mcp"]["rea"]["type"] == "local"
+    assert payload["mcp"]["rea"]["environment"]["REA_MCP_TOOLSET"] == "web"
+
+
+def test_mcp_cli_defaults_to_core(monkeypatch) -> None:
+    import rea_mcp.server.app as server_app
+
+    captured = {}
+
+    def fake_run(session, config) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr(server_app, "run_mcp_server", fake_run)
+    result = runner.invoke(app, ["mcp"])
+    assert result.exit_code == 0, result.output
+    assert captured["config"].mcp_toolset == "core"
+    result = runner.invoke(app, ["mcp", "--toolset", "full"])
+    assert result.exit_code == 0, result.output
+    assert captured["config"].mcp_toolset == "full"
+
+
+def test_mcp_available_only_option(monkeypatch) -> None:
+    import rea_mcp.server.app as server_app
+
+    captured = {}
+
+    def fake_run(session, config) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr(server_app, "run_mcp_server", fake_run)
+    result = runner.invoke(app, ["mcp", "--available-only"])
+    assert result.exit_code == 0, result.output
+    assert captured["config"].mcp_available_only is True

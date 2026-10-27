@@ -519,3 +519,12 @@ async def test_http_sse_budget_middleware() -> None:
     assert b"RESOURCE_CONSTRAINT" in body
     assert b"ev_sse" in body
     assert retained == ["mcp-http-sse"]
+
+
+async def test_triage_tool_returns_compact_evidence(elf_file: Path) -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    result = await _call(server, "triage", {"path": str(elf_file), "question": "what is this?"})
+    assert result["kind"] == "triage"
+    assert result["target"]["format"] == "elf"
+    assert result["evidence_ids"]
+    assert result["probe_count"] >= 1

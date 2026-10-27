@@ -32,11 +32,11 @@ You must legally obtain and be authorized to use commercial tools, including IDA
 
 rea-python is a provider-neutral reverse-engineering engine that returns traceable, evidence-carrying, reusable results, exposed through a shared CLI and MCP (Model Context Protocol) server. Its design follows the ideas behind [morluto/rea](https://github.com/morluto/rea), including the Evidence model: every result carries its identity, confidence, authority, limitations, and unresolved unknowns, so an AI agent (or a person) can reason honestly instead of trusting a bare answer.
 
-> Status: **alpha (0.1.54)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (265 MCP tools, 289 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
+> Status: **alpha (0.1.56)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (266 MCP tools, 293 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
 
 ## Upstream sync
 
-rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.54** it matches the **6.7.0** upstream tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
+rea-python tracks [morluto/rea](https://github.com/morluto/rea). As of **0.1.56** it matches the **6.7.0** upstream tool surface (169 MCP tools, 153 CLI commands) and adopts these 6.6/6.7 behaviors:
 
 - Apktool localized string tables: repeatable `--locales`, `--locale`, `--string-tables-only`
 - JADX whole-operation deadline: `REA_JADX_OPERATION_TIMEOUT_MS`
@@ -126,9 +126,36 @@ The exporter derives item/list/document state, writes a Dockerfile and verifier,
 
 All analysis runs locally. rea-mcp never uploads your target.
 
+## Agent modes and context budget
+
+REA-Python is optimized for both skill-first and MCP workflows. The full MCP catalog is large, so it is opt-in:
+
+```bash
+rea triage /path/to/target                         # compact, format-aware first pass
+rea mcp                                            # core toolset by default
+rea mcp --toolset native                           # native-binary tools + core
+rea mcp --toolset web,android                      # compose domains
+rea mcp --toolset full                             # complete compatibility catalog
+rea mcp --available-only                           # hide providers that are not installed
+```
+
+Measured with `REA_MCP_CLIENT=minimal` and `cl100k_base`:
+
+| Mode | Tools | Schema tokens |
+|---|---:|---:|
+| core | 19 | ~1.7k |
+| native | 73 | ~6.2k |
+| web | 53 | ~4.8k |
+| android | 61 | ~5.3k |
+| managed | 30 | ~2.8k |
+| full | 266 | ~23.3k |
+| bundled skill | 0 | ~2.3k |
+
+The bundled `skill.md` is a routing guide for CLI-first work. `rea triage` returns facts, limitations, evidence IDs and `next_probes` in one compact call. Use `python benchmarks/measure_schema.py` to reproduce the table, `python benchmarks/run_task_benchmark.py --target native=/bin/ls` for task-level turns/tokens/time, and `benchmarks/README.md` for the agent task methodology.
+
 ## Client schema profiles
 
-Tool schemas can be projected per client to fit hosts with small frame or schema limits. Set `REA_MCP_CLIENT` to a preset (`generic`, `claude`, `cursor`, `opencode`, `vscode`/`code`, `zed`, `minimal`), or override with `REA_MCP_INPUT_SCHEMA_PROFILE` (`full`/`compact`) and `REA_MCP_OUTPUT_SCHEMA_PROFILE` (`full`/`off`). `rea-mcp schema-matrix` prints the full matrix; `REA_MCP_COMPACT_BUDGET_BYTES` caps a single compacted schema.
+Tool schemas can be projected per client to fit hosts with small frame or schema limits. Set `REA_MCP_CLIENT` to a preset (`generic`, `claude`, `cursor`, `opencode`, `vscode`/`code`, `zed`, `minimal`), or override with `REA_MCP_INPUT_SCHEMA_PROFILE` (`full`/`compact`) and `REA_MCP_OUTPUT_SCHEMA_PROFILE` (`full`/`off`). `rea-mcp schema-matrix` prints the full matrix; `REA_MCP_COMPACT_BUDGET_BYTES` caps a single compacted schema. Agent presets (`cursor`, `opencode`, `vscode`, `zed`, `minimal`) default to compact input, no output schema, and the core toolset; `REA_MCP_TOOLSET` and `REA_MCP_AVAILABLE_ONLY` control the advertised catalog. Use `rea manifest` for a compact command catalog and `rea schema <command>` for one command's arguments.
 
 ## Quick start
 
@@ -136,13 +163,15 @@ Tool schemas can be projected per client to fit hosts with small frame or schema
 pip install rea-mcp             # PyPI distribution name is "rea-mcp"
 rea-mcp --help                  # "rea" and "rea-python" are installed as alias commands too
 rea-mcp inspect-binary-layout /path/to/program --json
+rea triage /path/to/program                          # one compact first pass
 ```
 
 As an MCP server (stdio) — `rea-mcp`, `rea`, and `rea-python` are interchangeable, as are `python -m rea_mcp`, `python -m rea`, and `python -m rea_python`:
 
 ```bash
 rea-mcp mcp     # or: rea mcp   |   rea-python mcp
-rea mcp
+rea mcp         # core toolset
+rea mcp --toolset full
 ```
 
 Output is JSON by default; a bare `--json` flag is accepted (before or after the command) for compatibility.
@@ -152,15 +181,226 @@ Output is JSON by default; a bare `--json` flag is accepted (before or after the
 ```bash
 rea-mcp doctor          # providers, external tools, effective timeouts
 rea-mcp setup           # print the MCP client registration plan
-rea-mcp setup --write <client-config.json>   # merge into an existing JSON/JSONC config
-rea-mcp setup --install-skill <dir>          # install the bundled agent skill
+rea-mcp setup --mode hybrid --toolset core --install-skill <skills-dir> --write <client-config.json>
+rea-mcp setup --mode skill --install-skill <skills-dir>   # skill only, no MCP
+rea-mcp setup --mode full --write <client-config.json>    # compatibility catalog
+```
+
+OpenCode paths are detected automatically and use the `mcp.<name>` local-server shape; other clients use `mcpServers`. For a token-sensitive OpenCode setup:
+
+```bash
+rea setup --mode hybrid --toolset core --install-skill ~/.config/opencode/skills
+rea setup --mode core --write ~/.config/opencode/opencode.json
 ```
 
 `doctor` lists each provider, its operations, and why an optional engine is unavailable. It does not install anything.
 
+## Agent client configuration examples
+
+Different clients use different MCP config keys. The table is the practical
+starting point; check your client version if it has recently changed its schema.
+
+| Client | Typical config | Server key |
+|---|---|---|
+| OpenCode | `~/.config/opencode/opencode.json` | `mcp` |
+| Claude Code / Desktop | `.mcp.json` or `claude_desktop_config.json` | `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` | `mcpServers` |
+| VS Code | `.vscode/mcp.json` | `servers` |
+| Codex CLI | `~/.codex/config.toml` | `mcp_servers` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+
+Format sources (checked against current vendor documentation; client versions can
+change their schema):
+
+- OpenCode: [MCP servers](https://opencode.ai/docs/mcp-servers/)
+- Claude Code: [MCP configuration](https://code.claude.com/docs/en/mcp)
+- Cursor: [Model Context Protocol](https://docs.cursor.com/context/mcp)
+- VS Code: [MCP servers](https://code.visualstudio.com/docs/copilot/customization/mcp-servers)
+- Codex CLI: [configuration reference](https://developers.openai.com/codex/config-reference)
+- Gemini CLI: [MCP server configuration](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)
+- AACode: [system prompt integration](https://github.com/kandada/aacode/blob/main/core/prompts.py)
+
+`rea setup --write ...` auto-detects OpenCode and otherwise writes the common
+`mcpServers` shape used by Claude/Cursor. VS Code (`servers`), Codex
+(`mcp_servers` in TOML) and Gemini (`settings.json`) examples are intentionally
+manual because their config containers differ. Always restart the client after
+editing.
+
+For token-sensitive use, start with `core` and add domains only when needed. The
+same `REA_MCP_CLIENT` / `REA_MCP_TOOLSET` values are used in every example.
+
+### OpenCode: hybrid (recommended)
+
+Install the routing skill and register a core MCP server in one step:
+
+```bash
+rea setup --mode hybrid --toolset core \
+  --install-skill ~/.config/opencode/skills \
+  --write ~/.config/opencode/opencode.json
+```
+
+The resulting config is:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "rea": {
+      "type": "local",
+      "command": ["rea-mcp", "mcp", "--toolset", "core"],
+      "enabled": true,
+      "environment": {
+        "REA_MCP_CLIENT": "opencode",
+        "REA_MCP_TOOLSET": "core"
+      }
+    }
+  }
+}
+```
+
+Core is enough for triage, inventory, strings, search, decompile, xrefs and
+Evidence. Add `"web"`, `"android"`, `"managed"` or `"full"` to
+`REA_MCP_TOOLSET` when the task needs those domains. For an even smaller setup,
+use skill-only mode and let the agent call `rea` directly:
+
+```bash
+rea setup --mode skill --install-skill ~/.config/opencode/skills
+rea triage /path/to/target
+```
+
+### Claude Code / Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "rea": {
+      "command": "rea-mcp",
+      "args": ["mcp", "--toolset", "core"],
+      "env": {
+        "REA_MCP_CLIENT": "claude",
+        "REA_MCP_TOOLSET": "core"
+      }
+    }
+  }
+}
+```
+
+Or generate/merge it:
+
+```bash
+rea setup --mode core --client claude --write .mcp.json
+```
+
+### Cursor
+
+```json
+{
+  "mcpServers": {
+    "rea": {
+      "command": "rea-mcp",
+      "args": ["mcp", "--toolset", "native"],
+      "env": {
+        "REA_MCP_CLIENT": "cursor",
+        "REA_MCP_TOOLSET": "native"
+      }
+    }
+  }
+}
+```
+
+`rea setup --mode core --write ~/.cursor/mcp.json` merges the same block
+automatically.
+
+### VS Code
+
+VS Code uses `servers`, not `mcpServers`:
+
+```json
+{
+  "servers": {
+    "rea": {
+      "type": "stdio",
+      "command": "rea-mcp",
+      "args": ["mcp", "--toolset", "core"],
+      "env": {
+        "REA_MCP_CLIENT": "vscode",
+        "REA_MCP_TOOLSET": "core"
+      }
+    }
+  }
+}
+```
+
+### Codex CLI
+
+```toml
+[mcp_servers.rea]
+command = "rea-mcp"
+args = ["mcp", "--toolset", "core"]
+
+[mcp_servers.rea.env]
+REA_MCP_CLIENT = "codex"
+REA_MCP_TOOLSET = "core"
+```
+
+### Gemini CLI
+
+```json
+{
+  "mcpServers": {
+    "rea": {
+      "command": "rea-mcp",
+      "args": ["mcp", "--toolset", "core"],
+      "env": {
+        "REA_MCP_CLIENT": "generic",
+        "REA_MCP_TOOLSET": "core"
+      }
+    }
+  }
+}
+```
+
+### Verify any client
+
+```bash
+rea doctor                         # provider/tool readiness
+rea mcp --toolset core             # confirm the server starts
+rea mcp --toolset core --available-only
+rea manifest                      # compact command list for skill/CLI use
+```
+
+Restart the client after changing its config. If the client shows the server but
+no tools, check that the command resolves on `PATH` (`rea-mcp`, `rea`, or
+`python -m rea_mcp`). On Windows, prefer the installed `rea-mcp` entry point and
+quote paths containing spaces.
+
+### AACode
+
+[AACode](https://github.com/kandada/aacode) is a lightweight Python/DeepSeek ReAct
+CLI coding agent. Its system prompt already points reverse-engineering tasks at
+`rea-python` (`pip install rea-mcp`), so no separate MCP registration is needed:
+AACode can call the CLI through its shell tool.
+
+```bash
+pip install rea-mcp          # install once in the environment AACode uses
+rea doctor                   # confirm providers
+```
+
+Then give AACode a task such as:
+
+```text
+Analyze /path/to/app.apk with rea-python. Start with `rea triage`, keep the
+evidence IDs, follow next_probes only when needed, and report limitations.
+```
+
+CLI-first is a good fit for AACode because its shell/Python execution model avoids
+advertising the full MCP catalog. Keep `rea` on `PATH` inside any sandbox or
+container AACode uses; if the target is on the host, make it visible to that
+environment first.
+
 ## Response budgets
 
-MCP results are capped at 512 KiB by default (`REA_MCP_MAX_RESPONSE_BYTES`). Oversized analysis results are retained as Evidence and returned as a compact summary with an `evidence_reference`; use `evidence-export`, `inspect-analysis-view --view record --evidence-id <id>`, or `get-evidence-bundle --full` for the complete data. Set a CLI budget with `--output-budget <bytes>`; an oversized CLI result is written to a UTF-8 JSON file and stdout receives a summary plus `output_path`. `inspect-analysis-view`, `inspect-artifact`, `inspect-managed-members`, `inspect-network-capture`, `inspect-android-package`, `inspect-android-class`, `inspect-android-method`, `decompile-android-apk`, `decompile-android-class`, and `analyze-javascript-application` page with `--offset`/`--limit` (JavaScript also has `--module-offset`/`--edge-offset`). Decompilers return a summary-sized preview by default; `--max-bytes` changes the limit and the full text remains in Evidence. `batch-decompile` caps pseudocode at 64 KiB per function (`--max-bytes-per-function 0` disables the cap). Captured web response bodies are capped at 32 KiB each and 512 KiB total; `observe-web-execution --bodies --retain-bodies` keeps the complete bodies in Evidence (up to 8 MiB) while returning bounded previews.
+MCP results are capped at 512 KiB by default (`REA_MCP_MAX_RESPONSE_BYTES`). Oversized analysis results are retained as Evidence and returned as a compact summary with an `evidence_reference`; use `evidence-export`, `inspect-analysis-view --view record --evidence-id <id>`, or `get-evidence-bundle --full` for the complete data. Set a CLI budget with `--output-budget <bytes>`, select fields with `--filter-output 'evidence_id,normalized_result.format'`, or print only its token count with `--token-count`; an oversized CLI result is written to a UTF-8 JSON file and stdout receives a summary plus `output_path`. `inspect-analysis-view`, `inspect-artifact`, `inspect-managed-members`, `inspect-network-capture`, `inspect-android-package`, `inspect-android-class`, `inspect-android-method`, `decompile-android-apk`, `decompile-android-class`, and `analyze-javascript-application` page with `--offset`/`--limit` (JavaScript also has `--module-offset`/`--edge-offset`). Decompilers return a summary-sized preview by default; `--max-bytes` changes the limit and the full text remains in Evidence. `batch-decompile` caps pseudocode at 64 KiB per function (`--max-bytes-per-function 0` disables the cap). Captured web response bodies are capped at 32 KiB each and 512 KiB total; `observe-web-execution --bodies --retain-bodies` keeps the complete bodies in Evidence (up to 8 MiB) while returning bounded previews.
 
 For managed assemblies, `inspect-managed-members --type <full-name> --detail summary --evidence-bundle <file>` writes the complete parent Evidence and prints identity, selection, counts and coverage. Page individual collections afterwards with `inspect-analysis-view <file> --view managed-members --collection types|fields|methods|member_refs|call_edges|field_accesses|field_initializers|user_strings --offset/--limit`; `inspect-managed-artifact --detail summary` exposes module/MVID, assembly, references, resources and attributes. Additional static providers include `inspect-elf-notes`, `inspect-erlang-beam`, `inspect-pe-certificates`, `inspect-native-exports`, `inspect-javascript-routes`, `inspect-apk-signature`, `inspect-byte-entropy`, `inspect-python-pyc`, `inspect-model-artifact`, `inspect-desktop-application`, `inspect-gpu-code-objects`, `inspect-il2cpp-metadata`, `read-bytes`, `search-bytes` and `address-to-file-offset`. `compare-managed-members` now compares types, fields, methods and nesting by exact type/name/signature identity. Optional C# decompilation is available through `decompile-managed-csharp` when `ilspycmd` is on `PATH` or `REA_ILSPY`/`REA_ILSPY_CMD_PATH` points to it. Managed metadata parsing uses a bounded in-process cache (`REA_MANAGED_CACHE_ENTRIES`, default 8); set it to `0` to disable. `doctor --required dotnet,artifacts,sqlite --strict` (or `--profile powerbi`) separates core readiness from optional engines. `rea mcp --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp` opts into HTTP transport; stdio remains the default.
 
