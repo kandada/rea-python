@@ -4,7 +4,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from rea_mcp.application.setup import client_for_path, write_registration
+from rea_mcp.application.setup import (
+    _sandbox_relative,
+    client_for_path,
+    write_registration,
+)
 from rea_mcp.composition.factories import create_binary_session
 from rea_mcp.config.settings import AppConfig
 from rea_mcp.server.app import build_mcp_server
@@ -47,6 +51,13 @@ def test_toolset_filter_can_hide_unavailable_contract_operations() -> None:
     assert not predicate("decompile")
 
 
+def test_sandbox_relative_drops_windows_drive_anchor() -> None:
+    relative = _sandbox_relative(
+        "C:/Users/demo/.config/opencode/opencode.json", Path("C:/Users/demo")
+    )
+    assert relative == Path(".config/opencode/opencode.json")
+
+
 def test_opencode_setup_uses_mcp_local_shape(tmp_path: Path) -> None:
     assert client_for_path(tmp_path / "opencode.json") == "opencode"
     config = tmp_path / "opencode.json"
@@ -81,9 +92,8 @@ def test_setup_plan_and_write_all_use_toolset_and_opencode_shape(tmp_path: Path)
     assert "mcp" in plan["server"]
     written = write_all_registrations(str(tmp_path / "clients"), toolset="full")
     assert written.ok
-    # write_all uses the current user's expanded path; find it instead of assuming a name.
     candidates = list((tmp_path / "clients").rglob("opencode.json"))
-    assert candidates
+    assert candidates, written.value
     data = json.loads(_strip_jsonc(candidates[0].read_text(encoding="utf-8")))
     assert data["mcp"]["rea"]["environment"]["REA_MCP_TOOLSET"] == "full"
 

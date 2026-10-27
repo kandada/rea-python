@@ -309,6 +309,14 @@ def write_registration(
     )
 
 
+def _sandbox_relative(location: str, home: Path) -> Path:
+    expanded = Path(location).expanduser()
+    try:
+        return expanded.relative_to(home)
+    except ValueError:
+        return Path(*expanded.parts[1:])
+
+
 def write_all_registrations(
     base: str,
     module: str = "rea_mcp",
@@ -325,8 +333,11 @@ def write_all_registrations(
     root = Path(base).expanduser()
     written: list[str] = []
     skipped: list[str] = []
+    home = Path.home()
     for location in KNOWN_CLIENT_CONFIGS:
-        relative = Path(location).expanduser().as_posix().lstrip("/")
+        # Keep sandbox writes inside the caller-supplied root on every OS,
+        # including Windows drive paths such as C:\\Users\\...
+        relative = _sandbox_relative(location, home)
         destination = root / relative
         result = write_registration(str(destination), module, overwrite=overwrite, toolset=toolset)
         if result.ok:
