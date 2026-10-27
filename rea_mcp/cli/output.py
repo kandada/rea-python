@@ -73,8 +73,9 @@ def _filter_payload(payload: Any, paths: tuple[str, ...]) -> Any:
 
 def _tokens(text: str) -> int:
     try:
-        import tiktoken
+        import importlib
 
+        tiktoken = importlib.import_module("tiktoken")
         return len(tiktoken.get_encoding("cl100k_base").encode(text))
     except Exception:
         return max(1, len(text) // 4)
