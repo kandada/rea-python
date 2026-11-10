@@ -14,8 +14,8 @@ _DEFAULT_COMPACT_BUDGET = 13312
 # Per-client schema presets. ``input`` is 'full' or 'compact'; ``output`` is 'full'
 # or 'off'. Explicit REA_MCP_*_SCHEMA_PROFILE settings override the preset.
 CLIENT_PRESETS: dict[str, dict[str, str]] = {
-    "generic": {"input": "full", "output": "full"},
-    "claude": {"input": "full", "output": "full"},
+    "generic": {"input": "compact", "output": "full"},
+    "claude": {"input": "compact", "output": "full"},
     "cursor": {"input": "compact", "output": "off"},
     "opencode": {"input": "compact", "output": "off"},
     "vscode": {"input": "compact", "output": "off"},
@@ -55,6 +55,10 @@ class AppConfig(BaseSettings):
     mcp_available_only: bool = Field(
         default=False,
         description="Hide tools whose declared provider operation is unavailable.",
+    )
+    mcp_clean_room: bool = Field(
+        default=False,
+        description="Advertise only tools that do not read the target's internals.",
     )
 
     @property

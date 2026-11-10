@@ -8,7 +8,9 @@ replay.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +24,8 @@ from ..domain.analysis_error import (
 )
 from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity, create_analysis_profile
 from ..domain.binary_target import BinaryTarget, TargetFormat, TargetKind, parse_binary_target
-from ..domain.evidence import Evidence, EvidenceObservation, create_evidence
+from ..domain.canonical import canonical_json
+from ..domain.evidence import Evidence, EvidenceObservation, create_evidence, parse_evidence
 from ..domain.residual_unknown import RecordUnknownInput, Resolution
 from ..domain.result import Result, err, ok
 from ..providers.base import AnalysisExecution, AnalysisProvider
@@ -110,10 +113,43 @@ class BinarySession:
 
     # -- execution ---------------------------------------------------------
 
+    def _cache_path(self, operation: str, parameters: dict[str, Any]) -> Path | None:
+        root = os.environ.get("REA_ANALYSIS_CACHE_DIR")
+        target = self._target
+        if not root or target is None:
+            return None
+        active = self._provider_for(operation)
+        if active is None:
+            return None
+        capability = active.provider.capability(operation)
+        if capability is None or capability.cache_policy != "snapshot":
+            return None
+        key = hashlib.sha256(
+            canonical_json(
+                {
+                    "sha256": target.sha256,
+                    "operation": operation,
+                    "parameters": parameters,
+                    "provider": active.provider_id,
+                }
+            ).encode()
+        ).hexdigest()
+        return Path(root).expanduser() / f"{key}.json"
+
     def execute(
         self, operation: str, parameters: dict[str, Any] | None = None
     ) -> Result[Evidence, AnalysisError]:
         parameters = parameters or {}
+        cache_path = self._cache_path(operation, parameters)
+        if cache_path is not None and cache_path.is_file():
+            try:
+                parsed = parse_evidence(json.loads(cache_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                parsed = None
+            if parsed is not None and parsed.ok:
+                recorded = self._records.record_evidence(parsed.value)
+                if recorded.ok:
+                    return ok(parsed.value)
         execution = self.execute_execution(operation, parameters)
         if not execution.ok:
             return err(execution.error)
@@ -121,6 +157,12 @@ class BinarySession:
         recorded = self._records.record_evidence(evidence)
         if not recorded.ok:
             return err(recorded.error)
+        if cache_path is not None:
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(evidence.model_dump_json(indent=2), encoding="utf-8")
+            except OSError:
+                pass
         return ok(evidence)
 
     def execute_execution(

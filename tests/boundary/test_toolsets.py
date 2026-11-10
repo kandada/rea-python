@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from rea_mcp.application.setup import (
     _sandbox_relative,
@@ -27,14 +28,14 @@ def test_core_catalog_is_small_and_contains_task_entrypoints() -> None:
     assert len(core) <= 25
     assert {"open_binary", "inspect_artifact", "triage", "decompile", "evidence_export"} <= names
     full = _catalog("full")
-    assert len(full) == 266
+    assert len(full) == 292
     assert len(core) < len(full) // 5
 
 
 def test_domain_toolsets_are_bounded() -> None:
     for name in ("native", "web", "android", "managed", "evidence", "external"):
         tools = _catalog(name)
-        assert 15 <= len(tools) < 266, name
+        assert 15 <= len(tools) < 292, name
     web = {tool.name for tool in _catalog("web")}
     assert "inspect_web_page" in web
     assert "decompile_android_class" not in web
@@ -122,3 +123,56 @@ def test_available_only_build_filters_contract_tools(monkeypatch) -> None:
     assert "inspect_binary_layout" in names
     assert "binary_session" in names
     assert "decompile" not in names
+
+
+def test_clean_room_filter_excludes_inside_tools() -> None:
+    from rea_mcp.server.toolsets import clean_room_filter
+
+    assert clean_room_filter("project_show")
+    assert clean_room_filter("craft_check")
+    assert not clean_room_filter("decompile")
+    assert not clean_room_filter("inspect_binary_layout")
+
+
+def test_registry_and_mode_metadata() -> None:
+    from rea_mcp.application.project.service import run as project_run
+    from rea_mcp.application.project.store import ProjectStore
+    from rea_mcp.domain.mode import allows
+    from rea_mcp.tooling.registry import REGISTRY
+
+    spec = REGISTRY.get("craft_run")
+    assert spec is not None and spec.toolset == "craft"
+    assert REGISTRY.get("inspect_java_class") is not None
+    assert allows("clean_room", "target_outside")
+    assert not allows("clean_room", "target_inside")
+    assert ProjectStore.__name__ == "ProjectStore"
+    assert callable(project_run)
+
+
+def test_registry_covers_every_mcp_and_cli_name() -> None:
+    import typer.main
+
+    from rea_mcp.cli.app import app as cli_app
+    from rea_mcp.tooling.registry import REGISTRY
+
+    config = AppConfig().model_copy(update={"mcp_toolset": "full", "mcp_client": "minimal"})
+    server = build_mcp_server(create_binary_session(config), config)
+    mcp_names = {tool.name for tool in asyncio.run(server.list_tools())}
+    assert mcp_names <= {tool.id for tool in REGISTRY.all()}
+    commands = set(cast("Any", typer.main.get_command(cli_app)).commands)
+    assert commands <= {tool.cli_name for tool in REGISTRY.all() if tool.cli_name}
+
+
+def test_invalid_toolset_name_is_rejected() -> None:
+    import pytest
+
+    from rea_mcp.server.toolsets import resolve_toolset
+
+    with pytest.raises(ValueError):
+        resolve_toolset("not-a-toolset")
+
+
+def test_freebuff_setup_path_is_known() -> None:
+    from rea_mcp.application.setup import client_for_path
+
+    assert client_for_path("~/.freebuff/mcp.json") == "generic"

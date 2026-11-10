@@ -51,6 +51,7 @@ class PeInfo:
     clr_header_size: int = 0
     resource_rva: int = 0
     resource_size: int = 0
+    data_directories: list[tuple[int, int]] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
 
     @property
@@ -120,6 +121,13 @@ def parse_pe(data: bytes | mmap.mmap) -> PeInfo | None:
         (num_dirs,) = struct.unpack_from("<I", data, opt + (108 if is_plus else 92))
     except struct.error:
         num_dirs = 0
+    for index in range(min(num_dirs, 16)):
+        base = dirs_offset + index * 8
+        try:
+            info.data_directories.append((u32(base), u32(base + 4)))
+        except struct.error:
+            info.limitations.append("Data directory table is truncated")
+            break
     if num_dirs > DIRECTORY_CLR:
         clr = dirs_offset + DIRECTORY_CLR * 8
         try:

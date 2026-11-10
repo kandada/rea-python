@@ -12,7 +12,7 @@ from tests.e2e.harness import mcp_client, run_cli
 pytestmark = pytest.mark.acceptance
 
 MODULES = ["rea_mcp", "rea", "rea_python"]
-TOOL_COUNT = 266
+TOOL_COUNT = 292
 
 
 @pytest.mark.parametrize("module", MODULES)

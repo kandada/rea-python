@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rea-mcp"
-version = "0.1.58"
+version = "0.1.60"
 description = "rea-mcp - reverse engineer anything from your terminal or agent, with one CLI and MCP server."
 readme = "README.md"
 license = "MIT"
@@ -41,6 +41,7 @@ dependencies = [
     "mcp>=1.26,<2",
     "uvicorn>=0.30",
     "msgpack>=1.0",
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]

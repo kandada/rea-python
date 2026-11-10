@@ -32,7 +32,7 @@ You must legally obtain and be authorized to use commercial tools, including IDA
 
 rea-python is a provider-neutral reverse-engineering engine that returns traceable, evidence-carrying, reusable results, exposed through a shared CLI and MCP (Model Context Protocol) server. Its design follows the ideas behind [morluto/rea](https://github.com/morluto/rea), including the Evidence model: every result carries its identity, confidence, authority, limitations, and unresolved unknowns, so an AI agent (or a person) can reason honestly instead of trusting a bare answer.
 
-> Status: **alpha (0.1.58)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (266 MCP tools, 293 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
+> Status: **alpha (0.1.60)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (292 MCP tools, 323 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
 
 ## Upstream sync
 
@@ -152,6 +152,54 @@ Measured with `REA_MCP_CLIENT=minimal` and `cl100k_base`:
 | bundled skill | 0 | ~2.3k |
 
 The bundled `skill.md` is a routing guide for CLI-first work. `rea triage` returns facts, limitations, evidence IDs and `next_probes` in one compact call. Use `python benchmarks/measure_schema.py` to reproduce the table, `python benchmarks/run_task_benchmark.py --target native=/bin/ls` for task-level turns/tokens/time, and `benchmarks/README.md` for the agent task methodology.
+
+## Craft projects
+
+rea-python now has a headless Craft layer on top of the existing REA engine. It keeps a
+persistent project, studies the target, asks a coding agent to build a new version, checks it,
+and only calls it Ready when the checks pass.
+
+```bash
+rea craft https://example.com "recreate this website" --mode clean_room
+rea craft https://example.com --request "recreate this website" --mode clean_room
+rea craft ./target-app "rebuild the settings screen" --mode deep --builder aacode
+rea project-list
+rea project-show ./example-com
+rea project-approve ./example-com --kind commands --value ask
+rea project-answer ./example-com ask_123 "use the blue palette"
+rea craft-check ./example-com
+rea craft-ready ./example-com
+rea project-serve --port 18766   # read-only project dashboard
+rea tool-status
+rea inspect-java-archive app.jar
+rea inspect-java-class app.jar --class-name com.example.Main
+```
+
+Project folders are durable:
+
+```text
+project/
+  project.json
+  investigation/   # brief, plan, evidence, unknowns, findings, journal, handoff
+  capture/         # website screenshots/layout or target triage
+  reference/       # user-supplied reference material
+  app/             # the new build
+  checks/round-N/  # structured CheckResult JSON and artifacts
+  inbox/           # questions and approvals
+  builds/          # builder prompt, session and usage
+```
+
+Website checks compare the original and the build at 1440/768/390 px using screenshots,
+layout, text and structure. Build checks support npm, Cargo, Python and static sites.
+`game-self-test` and runtime checks are framework-level placeholders until their external
+engines or OS APIs are available. Java archive/class inventory is implemented; Java
+decompilation uses optional Vineflower.
+
+Builders are caller-supplied: `REA_CRAFT_BUILDER` or `REA_CRAFT_BUILDER_COMMAND` (for example
+`aacode`, `opencode`, `claude`, `codex`, `dsh`). A text-only OpenAI-compatible API builder is
+available with `LLM_API_KEY`, `LLM_API_URL` and `LLM_MODEL_NAME`; it never receives screenshots. The builder runs in `app/`; rea-python records
+the prompt, output and usage. Clean room is a tool policy, not an OS sandbox; it is not an
+anti-DRM or anti-cheat mechanism.
 
 ## Client schema profiles
 

@@ -97,8 +97,22 @@ def build_environment_server(
         if store is None:
             return JSONResponse({"error": "state-not-derived"}, status_code=503)
         body = await _body(request)
-        rows = store.list_entities(str(body.get("collection") or ""))
-        return JSONResponse({"entities": rows, "count": len(rows)})
+        filters = (
+            body.get("filters") if isinstance(body.get("filters"), dict) else body.get("filter")
+        )
+        fields = body.get("fields") if isinstance(body.get("fields"), list) else None
+        return JSONResponse(
+            store.query_entities(
+                str(body.get("collection") or ""),
+                query=str(body.get("query") or body.get("q") or "") or None,
+                sort=str(body.get("sort") or "id"),
+                order=str(body.get("order") or "asc"),
+                offset=int(body.get("offset") or 0),
+                limit=int(body.get("limit") or 256),
+                filters=filters if isinstance(filters, dict) else None,
+                fields=[str(item) for item in fields] if fields else None,
+            )
+        )
 
     @server.custom_route("/agentenv/data/merge", methods=["POST"], include_in_schema=False)  # type: ignore[untyped-decorator]
     async def environment_data_merge(request: Request) -> JSONResponse:

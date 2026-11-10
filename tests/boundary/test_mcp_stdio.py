@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -38,7 +39,7 @@ def test_stdio_server_lists_tools() -> None:
         "doctor",
     }
     assert required <= set(names)
-    assert len(names) == 266
+    assert len(names) == 292
 
 
 async def _list_tools_with_tiny_budget() -> str:
@@ -63,3 +64,31 @@ async def _list_tools_with_tiny_budget() -> str:
 def test_stdio_transport_budget_is_enforced() -> None:
     message = asyncio.run(asyncio.wait_for(_list_tools_with_tiny_budget(), timeout=60))
     assert "RESOURCE_CONSTRAINT" in message or "budget" in message.lower()
+
+
+async def _call_tool_with_tiny_budget(path: str) -> str:
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(REPO_ROOT),
+        REA_MCP_MAX_RESPONSE_BYTES="1024",
+    )
+    params = StdioServerParameters(command=sys.executable, args=["-m", "rea_mcp", "mcp"], env=env)
+    async with (
+        stdio_client(params) as (read, write),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        try:
+            result = await session.call_tool("inspect_binary_layout", {"path": path})
+        except Exception as cause:
+            error = getattr(cause, "error", None)
+            data = getattr(error, "data", None)
+            return json.dumps(data, default=str) if data is not None else str(cause)
+        return str(result)
+
+
+def test_stdio_tool_result_budget_returns_envelope() -> None:
+    message = asyncio.run(asyncio.wait_for(_call_tool_with_tiny_budget("/bin/ls"), timeout=60))
+    assert "RESOURCE_CONSTRAINT" in message
+    assert "evidence_reference" in message
+    assert "ev_" in message

@@ -687,3 +687,102 @@ def test_javascript_cross_module_dataflow(tmp_path: Path) -> None:
     assert data["imported_source_count"] >= 1
     flows = {(row["module"], row["source"], row["sink"]) for row in result.value.result["flows"]}
     assert ("main.js", "storage-get", "network") in flows
+
+
+def _minimal_class() -> bytes:
+    import struct
+
+    def utf8(value: bytes) -> bytes:
+        return b"\x01" + struct.pack(">H", len(value)) + value
+
+    return b"".join(
+        [
+            b"\xca\xfe\xba\xbe",
+            struct.pack(">HH", 0, 52),
+            struct.pack(">H", 5),
+            utf8(b"Hello"),
+            b"\x07" + struct.pack(">H", 1),
+            utf8(b"java/lang/Object"),
+            b"\x07" + struct.pack(">H", 3),
+            struct.pack(">HHHHH", 0x0021, 2, 4, 0, 0),
+            struct.pack(">H", 0),
+            struct.pack(">H", 0),
+        ]
+    )
+
+
+def test_java_class_and_archive(tmp_path: Path) -> None:
+    import zipfile
+
+    from rea_mcp.providers.java import JavaProvider
+
+    class_file = tmp_path / "Hello.class"
+    class_file.write_bytes(_minimal_class())
+    parsed = JavaProvider().analyze("inspect_java_class", _target(class_file), {}, None)  # type: ignore[arg-type]
+    assert parsed.ok
+    assert parsed.value.result["class"] == "Hello"
+    assert parsed.value.result["super"] == "java.lang.Object"
+    archive_path = tmp_path / "hello.jar"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Hello.class", _minimal_class())
+        archive.writestr("META-INF/MANIFEST.MF", "Main-Class: Hello\n")
+    archive = JavaProvider().analyze("inspect_java_archive", _target(archive_path), {}, None)  # type: ignore[arg-type]
+    assert archive.ok
+    assert archive.value.result["class_count"] == 1
+    assert archive.value.result["main_class"] == "Hello"
+
+
+def test_java_vineflower_live_if_installed() -> None:
+    import pytest
+
+    from rea_mcp.providers.java import JavaProvider, _java, _vineflower
+
+    jar = Path("/Volumes/lenovops9/pyrea_local/vendor/fixtures/java/commons-io-2.16.1.jar")
+    if not jar.is_file() or _java() is None or _vineflower() is None:
+        pytest.skip("JDK/Vineflower fixture is not installed")
+    result = JavaProvider().analyze("decompile_java_class", _target(jar), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    assert result.value.result["file_count"] > 0
+
+
+def test_java_invalid_inputs(tmp_path: Path) -> None:
+    import zipfile
+
+    from rea_mcp.providers.java import JavaProvider
+
+    bad = tmp_path / "bad.class"
+    bad.write_bytes(b"not a class")
+    assert not JavaProvider().analyze("inspect_java_class", _target(bad), {}, None).ok  # type: ignore[arg-type]
+    empty = tmp_path / "empty.jar"
+    with zipfile.ZipFile(empty, "w") as archive:
+        archive.writestr("readme.txt", "none")
+    result = JavaProvider().analyze("inspect_java_archive", _target(empty), {}, None)  # type: ignore[arg-type]
+    assert result.ok
+    assert result.value.result["class_count"] == 0
+    assert (
+        not JavaProvider()
+        .analyze(
+            "inspect_java_class",
+            _target(empty),
+            {},
+            None,  # type: ignore[arg-type]
+        )
+        .ok
+    )
+
+
+def test_javascript_route_query_and_write_flows(tmp_path: Path) -> None:
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "main.js").write_text(
+        'const token = localStorage.getItem("t");\nfetch("/api/login?t=" + token);\n'
+        'router.get("/health", handler);\n',
+        encoding="utf-8",
+    )
+    provider = JavaScriptApplicationProvider()
+    routes = provider.analyze("inspect_javascript_routes", _target(app), {"query": "health"}, None)  # type: ignore[arg-type]
+    assert routes.ok
+    assert routes.value.result["route_count"] == 1
+    dataflow = provider.analyze("inspect_javascript_dataflow", _target(app), {}, None)  # type: ignore[arg-type]
+    assert dataflow.ok
+    assert dataflow.value.result["write_flow_count"] >= 1

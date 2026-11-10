@@ -708,6 +708,16 @@ def _dataflow(sources: dict[str, str], parameters: dict[str, Any]) -> dict[str, 
         "sink_offset": sink_page["offset"],
         "next_sink_offset": sink_page["next_offset"],
         "sinks": sink_page["items"],
+        "write_flow_count": sum(
+            1
+            for flow in deduped
+            if flow["sink"] in ("storage-set", "cookie-write", "indexeddb", "network")
+        ),
+        "write_flows": [
+            flow
+            for flow in deduped
+            if flow["sink"] in ("storage-set", "cookie-write", "indexeddb", "network")
+        ][:200],
         "exported_source_count": len(exports),
         "imported_source_count": sum(len(value) for value in imported.values()),
         "truncated": len(operations) >= 5000 or len(sinks) >= 5000,
@@ -824,6 +834,15 @@ def _routes(sources: dict[str, str], parameters: dict[str, Any]) -> dict[str, An
                 break
         if len(routes) >= 1000:
             break
+    query = str(parameters.get("query") or parameters.get("q") or "").lower()
+    if query:
+        routes = [
+            route
+            for route in routes
+            if query in route["path"].lower()
+            or query in route["file"].lower()
+            or query in route["kind"].lower()
+        ]
     page = page_sequence(
         routes,
         offset=int(parameters.get("offset") or 0),

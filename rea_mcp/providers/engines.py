@@ -137,6 +137,9 @@ def _jadx_operation_timeout() -> float:
 
 def _locale_directory_suffix(locale: str) -> str:
     normalized = locale.strip()
+    legacy_region = re.fullmatch(r"([a-z]{2,3})-r([0-9]{3})", normalized)
+    if legacy_region:
+        return f"b+{legacy_region.group(1)}+{legacy_region.group(2)}"
     match = re.fullmatch(r"([a-z]{2,3})-([A-Z]{2})", normalized)
     if match:
         return f"{match.group(1)}-r{match.group(2)}"

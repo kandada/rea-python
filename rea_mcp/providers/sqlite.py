@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ..application.deadlines import timeout_seconds
 from ..domain.analysis_error import AnalysisError, AnalysisInputError
 from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity
 from ..domain.binary_target import BinaryTarget
@@ -60,7 +61,7 @@ class SqliteDatabaseProvider(AnalysisProvider):
         path = Path(target.path)
         uri = f"file:{quote(str(path))}?mode=ro"
         try:
-            connection = sqlite3.connect(uri, uri=True)
+            connection = sqlite3.connect(uri, uri=True, timeout=timeout_seconds("sqlite", 5.0))
         except sqlite3.Error as cause:
             return err(AnalysisInputError(operation=operation, message=str(cause)))
 

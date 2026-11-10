@@ -10,9 +10,9 @@ def test_client_schema_matrix_shape() -> None:
         assert row["output_schema"] in {"full", "off"}
 
 
-def test_default_profile_is_full() -> None:
+def test_default_profile_is_compact_input() -> None:
     config = AppConfig()
-    assert config.effective_input_schema_profile == "full"
+    assert config.effective_input_schema_profile == "compact"
     assert config.effective_output_schema_profile == "full"
 
 

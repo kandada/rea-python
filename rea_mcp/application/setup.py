@@ -22,6 +22,7 @@ KNOWN_CLIENT_CONFIGS: tuple[str, ...] = (
     "~/.config/Code/User/globalStorage/mcp.json",
     "~/.cursor/mcp.json",
     "~/.config/opencode/opencode.json",
+    "~/.freebuff/mcp.json",
 )
 
 

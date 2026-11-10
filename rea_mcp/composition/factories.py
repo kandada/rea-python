@@ -41,6 +41,7 @@ from ..providers.gpu_code_objects import GpuCodeObjectsProvider
 from ..providers.harmony import HarmonyProvider
 from ..providers.hopper import HopperProvider
 from ..providers.il2cpp_metadata import Il2CppMetadataProvider
+from ..providers.java import JavaProvider
 from ..providers.javascript import JavaScriptApplicationProvider
 from ..providers.model_artifact import ModelArtifactProvider
 from ..providers.native_exports import NativeExportsProvider
@@ -65,6 +66,7 @@ from ..providers.rizin import RizinProvider
 from ..providers.rust import RustBinaryProvider
 from ..providers.signals import SignalCaptureProvider
 from ..providers.sqlite import SqliteDatabaseProvider
+from ..providers.upstream68 import Upstream68Provider
 from ..providers.wasm import WasmArtifactProvider
 from ..providers.web_runtime import WebRuntimeProvider
 
@@ -82,6 +84,7 @@ def build_providers() -> list[AnalysisProvider]:
         DesktopApplicationProvider(),
         GpuCodeObjectsProvider(),
         Il2CppMetadataProvider(),
+        JavaProvider(),
         ByteEntropyProvider(),
         NativeBytesProvider(),
         ElfNotesProvider(),
@@ -92,6 +95,7 @@ def build_providers() -> list[AnalysisProvider]:
         PeCertificatesProvider(),
         GoBinaryProvider(),
         RustBinaryProvider(),
+        Upstream68Provider(),
         ManagedStaticProvider(),
         CSharpDecompilerProvider(),
         SqliteDatabaseProvider(),

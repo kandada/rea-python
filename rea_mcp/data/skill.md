@@ -61,6 +61,25 @@ Core is intentionally about 20 tools. Domain toolsets add only relevant tools.
 should be opt-in. Do not choose it merely because the task is large; start core or a
 domain and escalate.
 
+## Craft projects
+
+When the user wants a new version of a website/app/game, use the craft workflow instead of
+only reporting facts:
+
+```bash
+rea craft https://example.com --request "recreate this website" --mode clean_room
+rea project-show <project>
+rea project-answer <project> <item> <answer>
+rea project-approve <project> --kind commands --value ask
+rea craft-check <project>
+rea craft-ready <project>
+```
+
+Study writes `capture/` and `investigation/brief.md`; Build runs the configured coding agent in
+`app/`; Check writes `checks/round-N/*.json`. Do not call Ready when checks fail or unknowns
+remain. Clean room must not read the original's code, files or page source; use only capture/
+and reference/ material. A missing builder/engine is an environment limitation, not a finding.
+
 ## Discovery
 
 ```bash

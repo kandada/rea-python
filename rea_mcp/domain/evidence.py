@@ -123,7 +123,7 @@ def _subject_from_target(target: Any) -> EvidenceSubject | None:
         format=target_format,
         architecture=architecture,
         sha256=sha256,
-        local_path=path,
+        local_path=str(Path(path).resolve()),
     )
 
 

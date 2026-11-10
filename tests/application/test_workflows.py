@@ -105,3 +105,122 @@ def test_batch_decompile_truncates_per_function() -> None:
     full = batch_decompile(_Session(), ["f"], max_bytes_per_function=0)
     assert full["functions"][0]["pseudocode"] == "x" * 1000
     assert full["functions"][0]["pseudocode_truncated"] is False
+
+
+def test_find_changed_behavior_and_correlation(tmp_path: Path) -> None:
+    from rea_mcp.application.workflows import (
+        correlate_static_and_runtime,
+        find_changed_behavior,
+    )
+
+    left = tmp_path / "left.json"
+    right = tmp_path / "right.json"
+    left.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {"evidence_id": "ev_1", "operation": "inspect", "normalized_result": {"x": 1}},
+                    {"evidence_id": "ev_2", "operation": "capture", "normalized_result": {}},
+                ]
+            }
+        )
+    )
+    right.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {"evidence_id": "ev_1", "operation": "inspect", "normalized_result": {"x": 2}},
+                    {"evidence_id": "ev_3", "operation": "capture", "normalized_result": {}},
+                ]
+            }
+        )
+    )
+    changed = find_changed_behavior(str(left), str(right))
+    assert changed["changed_behaviors"] == [{"evidence_id": "ev_1", "operation": "inspect"}]
+    correlated = correlate_static_and_runtime(str(left), str(right))
+    assert correlated["shared_operations"] == ["capture", "inspect"]
+    assert correlated["left_count"] == 2
+
+
+def test_compare_functions_and_trace(tmp_path: Path) -> None:
+    from rea_mcp.application.workflows import (
+        compare_functions,
+        trace_feature,
+        trace_native_values,
+    )
+
+    left = tmp_path / "left.json"
+    right = tmp_path / "right.json"
+    left.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "operation": "function",
+                        "normalized_result": {"functions": [{"name": "main"}, {"name": "old"}]},
+                    }
+                ]
+            }
+        )
+    )
+    right.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "operation": "list_procedures",
+                        "normalized_result": {"procedures": [{"name": "main"}, {"name": "new"}]},
+                    }
+                ]
+            }
+        )
+    )
+    compared = compare_functions(str(left), str(right))
+    assert compared["added"] == ["new"]
+    assert compared["removed"] == ["old"]
+
+    class Session:
+        def execute(self, operation, parameters):
+            return SimpleNamespace(
+                ok=True,
+                value=SimpleNamespace(
+                    normalized_result={"operation": operation, "parameters": parameters}
+                ),
+            )
+
+    feature = trace_feature(Session(), "token")
+    assert feature["feature"] == "token"
+    assert feature["strings"]["operation"] == "search_strings"
+    native = trace_native_values(Session(), "cookie")
+    assert native["query"] == "cookie"
+    assert native["matches"]["operation"] == "search"
+
+
+def test_call_graph_and_path() -> None:
+    from rea_mcp.application.workflows import build_call_path, get_call_graph
+
+    class Session:
+        def execute(self, operation, parameters):
+            if operation == "function":
+                rows = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+                return SimpleNamespace(
+                    ok=True, value=SimpleNamespace(normalized_result={"functions": rows})
+                )
+            name = parameters.get("function")
+            refs = {
+                "a": [],
+                "b": [{"from": "a", "to": "b", "type": "call"}],
+                "c": [{"from": "b", "to": "c", "type": "call"}],
+            }[name]
+            return SimpleNamespace(
+                ok=True, value=SimpleNamespace(normalized_result={"xrefs": refs})
+            )
+
+    graph = get_call_graph(Session(), limit=10)
+    assert graph["function_count"] == 3
+    assert len(graph["edges"]) == 2
+    path = build_call_path(Session(), "a", "c")
+    assert path["found"] is True
+    assert path["path"] == ["a", "b", "c"]
+    missing = build_call_path(Session(), "c", "a")
+    assert missing["found"] is False

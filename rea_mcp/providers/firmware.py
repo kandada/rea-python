@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Any
 
+from ..application.deadlines import timeout_seconds
 from ..domain.analysis_error import AnalysisError, AnalysisInputError
 from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity
 from ..domain.binary_target import BinaryTarget
@@ -78,7 +80,9 @@ class FirmwareProvider(AnalysisProvider):
             return self._extract(target, parameters)
         try:
             with open_target(target.path) as data:
-                regions = scan_firmware(data)
+                regions = scan_firmware(
+                    data, deadline=time.monotonic() + timeout_seconds("firmware", 30.0)
+                )
         except OSError as cause:
             return err(AnalysisInputError(operation=operation, message=str(cause)))
         result: dict[str, Any] = {"regions": regions, "region_count": len(regions)}
@@ -112,7 +116,9 @@ class FirmwareProvider(AnalysisProvider):
             )
         try:
             with open_target(target.path) as data:
-                regions = scan_firmware(data)
+                regions = scan_firmware(
+                    data, deadline=time.monotonic() + timeout_seconds("firmware", 30.0)
+                )
                 out_dir = Path(str(output_directory)).expanduser()
                 out_dir.mkdir(parents=True, exist_ok=True)
                 extracted: list[dict[str, Any]] = []

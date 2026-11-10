@@ -528,3 +528,89 @@ async def test_triage_tool_returns_compact_evidence(elf_file: Path) -> None:
     assert result["target"]["format"] == "elf"
     assert result["evidence_ids"]
     assert result["probe_count"] >= 1
+
+
+async def test_mcp_resources_and_prompts() -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    resources = {str(item.uri) for item in await server.list_resources()}
+    assert {"rea://skill", "rea://tool-status"} <= resources
+    prompts = {item.name for item in await server.list_prompts()}
+    assert {"craft-project", "inspect-target", "compare-build"} <= prompts
+
+
+async def test_project_tools_and_fake_craft_run(tmp_path: Path, monkeypatch: Any) -> None:
+    import sys
+
+    script = tmp_path / "builder.py"
+    script.write_text(
+        "import pathlib\n"
+        "pathlib.Path('index.html').write_text('<html><body><h1>Hello</h1></body></html>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REA_CRAFT_BUILDER_COMMAND", f"{sys.executable} {script} {{prompt}}")
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    created = await _call(
+        server,
+        "project_create",
+        {"request": "make a page", "project_dir": str(tmp_path / "project"), "name": "demo"},
+    )
+    assert created["status"] == "new"
+    shown = await _call(server, "project_show", {"project": created["root"]})
+    assert shown["project_id"] == created["project_id"]
+    run = await _call(
+        server,
+        "craft_run",
+        {"request": "make a page", "project_dir": str(tmp_path / "project2"), "rounds": 1},
+    )
+    assert run["ready"] is True
+    status = await _call(server, "craft_status", {"project": run["project"]["root"]})
+    assert status["status"] == "ready"
+
+
+async def test_enable_toolset_changes_advertised_catalog() -> None:
+    config = AppConfig().model_copy(update={"mcp_toolset": "core", "mcp_client": "minimal"})
+    server = build_mcp_server(create_binary_session(config), config)
+    before = {tool.name for tool in await server.list_tools()}
+    assert "inspect_web_page" not in before
+    await _call(server, "enable_toolset", {"toolset": "web"})
+    after = {tool.name for tool in await server.list_tools()}
+    assert "inspect_web_page" in after
+
+
+async def test_project_lifecycle_tools(tmp_path: Path) -> None:
+    server = build_mcp_server(create_binary_session(AppConfig()), AppConfig())
+    created = await _call(
+        server,
+        "project_create",
+        {"request": "make", "project_dir": str(tmp_path / "p"), "name": "p"},
+    )
+    (tmp_path / "p/app/index.html").write_text("ok", encoding="utf-8")
+    finished = await _call(server, "project_finish", {"project": created["root"]})
+    assert finished["status"] == "ready"
+    pinned = await _call(server, "project_pin", {"project": created["root"], "name": "v1"})
+    assert Path(pinned["path"]).is_dir()
+    listed = await _call(server, "project_pins", {"project": created["root"]})
+    assert listed["pins"][0]["id"] == "v1"
+    duplicated = await _call(
+        server,
+        "project_duplicate",
+        {"project": created["root"], "destination": str(tmp_path / "copy"), "name": "copy"},
+    )
+    assert Path(duplicated["path"]).is_dir()
+
+
+def test_mcp_budget_error_keeps_envelope_and_evidence(monkeypatch: Any) -> None:
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    from rea_mcp.server.app import _enforce_budget
+
+    monkeypatch.setenv("REA_MCP_MAX_RESPONSE_BYTES", "1024")
+    try:
+        _enforce_budget({"evidence_id": "ev_test", "payload": "x" * 2000})
+    except ToolError as cause:
+        text = str(cause)
+        assert "RESOURCE_CONSTRAINT" in text
+        assert "evidence_reference" in text
+        assert "ev_test" in text
+    else:
+        raise AssertionError("budget was not enforced")

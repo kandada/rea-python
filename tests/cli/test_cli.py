@@ -386,3 +386,126 @@ def test_mcp_available_only_option(monkeypatch) -> None:
     result = runner.invoke(app, ["mcp", "--available-only"])
     assert result.exit_code == 0, result.output
     assert captured["config"].mcp_available_only is True
+
+
+def test_craft_cli_with_fake_builder(tmp_path: Path, monkeypatch) -> None:
+    import sys
+
+    builder = tmp_path / "builder.py"
+    builder.write_text(
+        "import pathlib\n"
+        "pathlib.Path('index.html').write_text('<html><body><h1>Hello</h1></body></html>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REA_CRAFT_BUILDER_COMMAND", f"{sys.executable} {builder} {{prompt}}")
+    project = tmp_path / "project"
+    result = runner.invoke(
+        app,
+        [
+            "craft",
+            "--request",
+            "make a page",
+            "--project-dir",
+            str(project),
+            "--rounds",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ready"] is True
+    shown = runner.invoke(app, ["project-show", str(project)])
+    assert shown.exit_code == 0, shown.output
+    assert json.loads(shown.stdout)["status"] == "ready"
+
+
+def test_craft_positional_request_syntax(tmp_path: Path, monkeypatch) -> None:
+    import sys
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "input.txt").write_text("x", encoding="utf-8")
+    builder = tmp_path / "builder.py"
+    builder.write_text(
+        "import pathlib\npathlib.Path('index.html').write_text('<html><body>ok</body></html>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REA_CRAFT_BUILDER_COMMAND", f"{sys.executable} {builder} {{prompt}}")
+    result = runner.invoke(
+        app,
+        [
+            "craft",
+            str(target),
+            "make a page",
+            "--project-dir",
+            str(tmp_path / "project"),
+            "--rounds",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["ready"] is True
+
+
+def test_tool_status_and_plugin_list_cli() -> None:
+    status = runner.invoke(app, ["tool-status"])
+    assert status.exit_code == 0, status.output
+    payload = json.loads(status.stdout)
+    assert payload["tools"]
+    assert "statuses" in payload
+    plugins = runner.invoke(app, ["plugin-list"])
+    assert plugins.exit_code == 0, plugins.output
+    assert "paths" in json.loads(plugins.stdout)
+
+
+def test_project_lifecycle_cli(tmp_path: Path) -> None:
+    created = runner.invoke(
+        app,
+        [
+            "project-create",
+            "--request",
+            "make",
+            "--project-dir",
+            str(tmp_path / "p"),
+            "--name",
+            "p",
+        ],
+    )
+    assert created.exit_code == 0, created.output
+    root = json.loads(created.stdout)["root"]
+    (Path(root) / "app").mkdir(exist_ok=True)
+    (Path(root) / "app/index.html").write_text("ok", encoding="utf-8")
+    finished = runner.invoke(app, ["project-finish", root])
+    assert finished.exit_code == 0
+    pin = runner.invoke(app, ["project-pin", root, "--name", "v1"])
+    assert pin.exit_code == 0
+    pins = runner.invoke(app, ["project-pins", root])
+    assert json.loads(pins.stdout)["pins"][0]["id"] == "v1"
+    duplicate = runner.invoke(
+        app, ["project-duplicate", root, str(tmp_path / "copy"), "--name", "copy"]
+    )
+    assert duplicate.exit_code == 0
+
+
+def test_asset_generate_without_command_fails(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("REA_ASSET_COMMAND", raising=False)
+    result = runner.invoke(
+        app, ["asset-generate", "--prompt", "x", "--output", str(tmp_path / "out.png")]
+    )
+    assert result.exit_code != 0
+    assert "REA_ASSET_COMMAND" in result.output
+
+
+def test_structured_request_stdin_jsonl(elf_file: Path) -> None:
+    payload = {
+        "operation": "inspect_binary_layout",
+        "path": str(elf_file),
+        "parameters": {},
+    }
+    result = runner.invoke(app, ["request", "--jsonl"], input=json.dumps(payload))
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines
+    record = json.loads(lines[0])
+    assert record["operation"] == "inspect_binary_layout"
+    assert record["evidence_id"].startswith("ev_")

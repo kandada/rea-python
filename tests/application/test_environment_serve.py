@@ -216,3 +216,38 @@ def test_environment_compare_tool(tmp_path) -> None:
         assert result["status"] in ("changed", "unchanged")
 
     asyncio.run(run())
+
+
+def test_environment_data_list_query_sort_page() -> None:
+    from starlette.testclient import TestClient
+
+    store = _store()
+    for entity_id, name in (("2", "two"), ("3", "three")):
+        assert store.add(
+            {
+                "type": "/api/items/{id}",
+                "collection": f"/api/items/{entity_id}",
+                "id": entity_id,
+                "fields": {"id": entity_id, "name": name},
+                "view_fields": [],
+                "record_ordinals": [],
+            }
+        ).ok
+    app = build_environment_server(_source(), name="demo", store=store).streamable_http_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/agentenv/data/list",
+            json={
+                "collection": "/api/items",
+                "query": "th",
+                "sort": "name",
+                "order": "desc",
+                "offset": 0,
+                "limit": 1,
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert payload["entities"][0]["id"] == "3"
+        assert payload["next_offset"] is None

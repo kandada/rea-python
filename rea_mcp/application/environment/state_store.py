@@ -101,6 +101,68 @@ class EnvironmentStateStore:
             if self._in_collection(entity, normalized)
         ]
 
+    def query_entities(
+        self,
+        collection: str,
+        *,
+        query: str | None = None,
+        sort: str = "id",
+        order: str = "asc",
+        offset: int = 0,
+        limit: int = 256,
+        filters: dict[str, Any] | None = None,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
+        rows = self.list_entities(collection)
+        if filters:
+            rows = [
+                entity
+                for entity in rows
+                if all(
+                    (entity.get("fields") or {}).get(key) == value for key, value in filters.items()
+                )
+            ]
+        if query:
+            needle = query.lower()
+            rows = [
+                entity
+                for entity in rows
+                if needle in str(entity.get("id", "")).lower()
+                or needle in canonical_json(entity.get("fields") or {}).lower()
+            ]
+        reverse = order.lower() == "desc"
+        rows.sort(
+            key=lambda entity: str((entity.get("fields") or {}).get(sort, entity.get("id", ""))),
+            reverse=reverse,
+        )
+        total = len(rows)
+        start = min(max(0, offset), total)
+        size = max(1, min(1000, limit))
+        page = rows[start : start + size]
+        if fields:
+            page = [
+                {
+                    **entity,
+                    "fields": {
+                        key: value
+                        for key, value in (entity.get("fields") or {}).items()
+                        if key in fields
+                    },
+                }
+                for entity in page
+            ]
+        next_offset = start + len(page) if start + len(page) < total else None
+        return {
+            "entities": page,
+            "count": len(page),
+            "total": total,
+            "offset": start,
+            "next_offset": next_offset,
+            "query": query,
+            "sort": sort,
+            "order": "desc" if reverse else "asc",
+        }
+
     def known_collections_of(self, type_name: str) -> list[str]:
         return sorted(
             {

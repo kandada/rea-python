@@ -12,6 +12,30 @@ from fnmatch import fnmatch
 
 from ..contracts.tool_contracts import TOOL_CONTRACTS
 
+CLEAN_ROOM_TOOLS: frozenset[str] = frozenset(
+    {
+        "binary_session",
+        "providers",
+        "doctor",
+        "list_toolsets",
+        "enable_toolset",
+        "project_create",
+        "project_list",
+        "project_show",
+        "project_answer",
+        "project_approve",
+        "craft_study",
+        "craft_check",
+        "craft_ready",
+        "craft_status",
+        "triage",
+        "evidence_export",
+        "evidence_import",
+        "inspect_analysis_view",
+        "get_evidence_bundle",
+    }
+)
+
 CORE_TOOLS: frozenset[str] = frozenset(
     {
         "open_binary",
@@ -19,6 +43,8 @@ CORE_TOOLS: frozenset[str] = frozenset(
         "binary_session",
         "providers",
         "doctor",
+        "list_toolsets",
+        "enable_toolset",
         "triage",
         "inspect_binary_layout",
         "inspect_artifact",
@@ -43,6 +69,8 @@ _DOMAIN_PATTERNS: dict[str, tuple[str, ...]] = {
         "inspect_go_binary",
         "inspect_rust_binary",
         "inspect_native_*",
+        "inspect_dol_executable",
+        "inspect_pe_native_metadata",
         "inspect_pe_*",
         "inspect_with_objdump",
         "analyze",
@@ -62,6 +90,8 @@ _DOMAIN_PATTERNS: dict[str, tuple[str, ...]] = {
         "inspect_address_context",
         "inspect_navigation_context",
         "inspect_native_*",
+        "inspect_dol_executable",
+        "inspect_pe_native_metadata",
         "trace_call_path",
         "trace_feature",
         "trace_native_values",
@@ -98,6 +128,17 @@ _DOMAIN_PATTERNS: dict[str, tuple[str, ...]] = {
         "identify_flutter_build",
         "inspect_dart_aot",
         "project_harmony_application_graph",
+    ),
+    "java": (
+        "java_*",
+        "inspect_java_*",
+        "search_java_classes",
+        "decompile_java_class",
+    ),
+    "formats68": (
+        "inspect_flattened_devicetree",
+        "inspect_protobuf_body",
+        "inspect_packaged_application",
     ),
     "managed": (
         "*managed*",
@@ -184,11 +225,30 @@ def resolve_toolset(name: str, *, client: str = "generic") -> frozenset[str] | N
             continue
         if part in _FULL_ALIASES:
             return None
+        if part == "core":
+            continue
         patterns = _DOMAIN_PATTERNS.get(part)
         if patterns is None:
             raise ValueError(f"unknown MCP toolset: {part}")
         allowed.update(pattern for pattern in patterns)
     return frozenset(allowed)
+
+
+def infer_toolset(name: str) -> str:
+    if name in CORE_TOOLS:
+        return "core"
+    for toolset, patterns in _DOMAIN_PATTERNS.items():
+        if _matches(name, patterns):
+            return toolset
+    return "compat"
+
+
+def infer_access(name: str) -> str:
+    return "target_outside" if name in CLEAN_ROOM_TOOLS else "target_inside"
+
+
+def clean_room_filter(name: str) -> bool:
+    return name in CLEAN_ROOM_TOOLS
 
 
 def toolset_filter(

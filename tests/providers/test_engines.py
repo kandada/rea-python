@@ -761,3 +761,11 @@ def test_kuna_raw_image_arguments(tmp_path: Path) -> None:
         "--base",
         "0x0",
     ]
+
+
+def test_apk_legacy_numeric_locale_normalization() -> None:
+    from rea_mcp.providers.engines import _locale_directory_suffix
+
+    assert _locale_directory_suffix("es-r419") == "b+es+419"
+    assert _locale_directory_suffix("es-419") == "b+es+419"
+    assert _locale_directory_suffix("pt-BR") == "pt-rBR"

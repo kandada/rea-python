@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mmap
+import time
 from typing import Any
 
 _SIGNATURES: tuple[tuple[bytes, str], ...] = (
@@ -29,13 +30,21 @@ _SIGNATURES: tuple[tuple[bytes, str], ...] = (
 )
 
 
-def scan_firmware(data: bytes | mmap.mmap, *, max_regions: int = 256) -> list[dict[str, Any]]:
+def scan_firmware(
+    data: bytes | mmap.mmap,
+    *,
+    max_regions: int = 256,
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
     """Return signature regions ordered by offset."""
 
     regions: list[dict[str, Any]] = []
     for magic, description in _SIGNATURES:
         start = 0
         while len(regions) < max_regions:
+            if deadline is not None and time.monotonic() >= deadline:
+                regions.sort(key=lambda region: region["offset"])
+                return regions[:max_regions]
             index = data.find(magic, start)
             if index < 0:
                 break

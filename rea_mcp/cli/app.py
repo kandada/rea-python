@@ -262,6 +262,46 @@ def inspect_desktop_application(
     _run("inspect_desktop_application", path, provider, {"detail": detail})
 
 
+@app.command("inspect-pe-native-metadata")
+def inspect_pe_native_metadata(
+    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+) -> None:
+    """PE imports, delay imports, TLS and load config."""
+    _run("inspect_pe_native_metadata", path, provider, {})
+
+
+@app.command("inspect-dol-executable")
+def inspect_dol_executable(
+    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+) -> None:
+    """GameCube/Wii DOL sections and entry."""
+    _run("inspect_dol_executable", path, provider, {})
+
+
+@app.command("inspect-flattened-devicetree")
+def inspect_flattened_devicetree(
+    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+) -> None:
+    """Flattened device tree nodes and MMIO candidates."""
+    _run("inspect_flattened_devicetree", path, provider, {})
+
+
+@app.command("inspect-protobuf-body")
+def inspect_protobuf_body(
+    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+) -> None:
+    """Schema-less protobuf/gRPC body decoding."""
+    _run("inspect_protobuf_body", path, provider, {})
+
+
+@app.command("inspect-packaged-application")
+def inspect_packaged_application(
+    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+) -> None:
+    """PyInstaller, Node SEA and IPS markers."""
+    _run("inspect_packaged_application", path, provider, {})
+
+
 @app.command("inspect-gpu-code-objects")
 def inspect_gpu_code_objects(
     path: str = typer.Argument(...),
@@ -3451,6 +3491,444 @@ def evidence_import(source: str = typer.Argument(...)) -> None:
     emit_json({"valid": True, "record_count": len(payload["records"])})
 
 
+@app.command("inspect-java-archive")
+def inspect_java_archive(
+    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+) -> None:
+    """Java archive class inventory."""
+    _run("inspect_java_archive", path, provider, {})
+
+
+@app.command("inspect-java-class")
+def inspect_java_class(
+    path: str = typer.Argument(...),
+    class_name: str | None = typer.Option(None, "--class-name"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Java class metadata."""
+    _run("inspect_java_class", path, provider, {"class_name": class_name})
+
+
+@app.command("search-java-classes")
+def search_java_classes(
+    path: str = typer.Argument(...),
+    query: str = typer.Argument(...),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Search Java class names."""
+    _run("search_java_classes", path, provider, {"query": query})
+
+
+@app.command("decompile-java-class")
+def decompile_java_class(
+    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+) -> None:
+    """Java decompilation via Vineflower."""
+    _run("decompile_java_class", path, provider, {})
+
+
+@app.command("project-create")
+def project_create(
+    request: str = typer.Option(..., "--request"),
+    target: str | None = typer.Argument(None),
+    project_dir: str | None = typer.Option(None, "--project-dir"),
+    name: str | None = typer.Option(None, "--name"),
+    mode: str = typer.Option("clean_room", "--mode"),
+    stack: str = typer.Option("", "--stack"),
+    builder: str = typer.Option("", "--builder"),
+) -> None:
+    """Create a persistent craft project."""
+    from ..application.craft.service import create_craft
+
+    created = create_craft(
+        target=target,
+        request=request,
+        project_dir=project_dir,
+        name=name,
+        mode=mode,
+        stack=stack,
+        builder=builder,
+    )
+    if not created.ok:
+        fail(created.error)
+    emit_json(created.value.summary())
+
+
+@app.command("project-list")
+def project_list(directory: str | None = typer.Option(None, "--directory")) -> None:
+    """List craft projects in a folder."""
+    from pathlib import Path as _Path
+
+    from ..application.project_store import ProjectStore
+
+    root = _Path(directory).expanduser() if directory else _Path.cwd()
+    rows = []
+    for path in sorted(root.glob("*/project.json")):
+        loaded = ProjectStore.open(path.parent)
+        if loaded.ok:
+            rows.append(loaded.value.summary())
+    emit_json({"project_count": len(rows), "projects": rows})
+
+
+@app.command("project-show")
+def project_show(project: str = typer.Argument(...)) -> None:
+    """Show a craft project and its latest checks."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    emit_json(loaded.value.summary())
+
+
+@app.command("project-finish")
+def project_finish(
+    project: str = typer.Argument(...),
+    note: str = typer.Option("user accepted the current result", "--note"),
+) -> None:
+    """Mark a project ready as the user's accepted result."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    emit_json(loaded.value.finish(note))
+
+
+@app.command("project-pin")
+def project_pin(
+    project: str = typer.Argument(...), name: str | None = typer.Option(None, "--name")
+) -> None:
+    """Create a pinned copy of a project build."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    try:
+        emit_json(loaded.value.pin(name))
+    except OSError as cause:
+        fail(AnalysisInputError(operation="project-pin", message=str(cause)))
+
+
+@app.command("project-pins")
+def project_pins(project: str = typer.Argument(...)) -> None:
+    """List pinned builds for a project."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    emit_json({"pins": loaded.value.list_pins()})
+
+
+@app.command("project-pin-delete")
+def project_pin_delete(project: str = typer.Argument(...), pin: str = typer.Argument(...)) -> None:
+    """Delete a pinned build."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    emit_json({"deleted": loaded.value.delete_pin(pin)})
+
+
+@app.command("project-duplicate")
+def project_duplicate(
+    project: str = typer.Argument(...),
+    destination: str = typer.Argument(...),
+    name: str | None = typer.Option(None, "--name"),
+) -> None:
+    """Duplicate a project to another folder."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    try:
+        emit_json(loaded.value.duplicate(destination, name))
+    except OSError as cause:
+        fail(AnalysisInputError(operation="project-duplicate", message=str(cause)))
+
+
+@app.command("project-answer")
+def project_answer(
+    project: str = typer.Argument(...),
+    item: str = typer.Argument(...),
+    value: str = typer.Argument(...),
+) -> None:
+    """Answer a project question or approval."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    answered = loaded.value.answer(item, value)
+    if not answered.ok:
+        fail(answered.error)
+    emit_json(answered.value)
+
+
+@app.command("project-approve")
+def project_approve(
+    project: str = typer.Argument(...),
+    kind: str = typer.Option(..., "--kind"),
+    value: str = typer.Option(..., "--value"),
+) -> None:
+    """Set a project approval policy: allow, ask or refuse."""
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    loaded.value.set_approval(kind, value)
+    emit_json({"project": loaded.value.summary(), "kind": kind, "value": value})
+
+
+@app.command("craft")
+def craft(
+    target: str | None = typer.Argument(None),
+    request_text: str | None = typer.Argument(None),
+    request: str | None = typer.Option(None, "--request"),
+    project_dir: str | None = typer.Option(None, "--project-dir"),
+    name: str | None = typer.Option(None, "--name"),
+    mode: str = typer.Option("clean_room", "--mode"),
+    stack: str = typer.Option("", "--stack"),
+    builder: str | None = typer.Option(None, "--builder"),
+    rounds: int = typer.Option(3, "--rounds"),
+    good_enough: float = typer.Option(85.0, "--good-enough"),
+) -> None:
+    """Study, build, check and refine a project."""
+    from ..application.craft.service import run as craft_run_service
+
+    request_text = request or request_text
+    if not request_text:
+        fail(AnalysisInputError(operation="craft", message="request text is required"))
+    result = craft_run_service(
+        target=target,
+        request=request_text,
+        project_dir=project_dir,
+        name=name,
+        mode=mode,
+        stack=stack,
+        builder=builder,
+        rounds=rounds,
+        good_enough=good_enough,
+    )
+    if not result.ok:
+        fail(result.error)
+    emit_json(result.value)
+
+
+@app.command("craft-study")
+def craft_study(project: str = typer.Argument(...)) -> None:
+    """Study a project's target and write its brief."""
+    from ..application.craft.service import study
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    result = study(loaded.value)
+    if not result.ok:
+        fail(result.error)
+    emit_json(result.value)
+
+
+@app.command("craft-build")
+def craft_build(
+    project: str = typer.Argument(...), builder: str | None = typer.Option(None, "--builder")
+) -> None:
+    """Run a coding agent to build a project."""
+    from ..application.craft.service import build
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    result = build(loaded.value, builder=builder)
+    if not result.ok:
+        fail(result.error)
+    emit_json(result.value)
+
+
+@app.command("craft-check")
+def craft_check(
+    project: str = typer.Argument(...),
+    good_enough: float = typer.Option(85.0, "--good-enough"),
+) -> None:
+    """Run build and visual checks for a project."""
+    from ..application.craft.service import check
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    result = check(loaded.value, good_enough=good_enough)
+    if not result.ok:
+        fail(result.error)
+    emit_json({"checks": [item.to_dict() for item in result.value]})
+
+
+@app.command("craft-ready")
+def craft_ready(project: str = typer.Argument(...)) -> None:
+    """Mark a project ready when its latest checks pass."""
+    from ..application.craft.service import ready
+    from ..application.project_store import ProjectStore
+
+    loaded = ProjectStore.open(project)
+    if not loaded.ok:
+        fail(loaded.error)
+    result = ready(loaded.value)
+    if not result.ok:
+        fail(result.error)
+    emit_json(result.value)
+
+
+@app.command("plugin-list")
+def plugin_list() -> None:
+    """List explicitly configured Python check plugins."""
+    from ..application.plugins import load_plugin_checks, plugin_paths
+
+    checks = load_plugin_checks()
+    emit_json(
+        {
+            "paths": [str(path) for path in plugin_paths()],
+            "checks": [str(getattr(check, "id", "plugin")) for check in checks],
+        }
+    )
+
+
+@app.command("request")
+def request(
+    input_path: str = typer.Option("-", "--input", help="JSON request file or - for stdin."),
+    jsonl: bool = typer.Option(False, "--jsonl", help="Print one Evidence JSON per line."),
+) -> None:
+    """Run one or more structured requests from JSON/stdin."""
+    import sys
+
+    raw = sys.stdin.read() if input_path == "-" else Path(input_path).read_text(encoding="utf-8")
+    payload = json.loads(raw)
+    requests = payload if isinstance(payload, list) else [payload]
+    session, _config = _session()
+    current: str | None = None
+    outputs: list[dict[str, Any]] = []
+    for item in requests:
+        if not isinstance(item, dict):
+            continue
+        operation = str(item.get("operation") or item.get("command") or "")
+        path = item.get("path")
+        parameters = item.get("parameters") or item.get("args") or {}
+        if not operation or not isinstance(parameters, dict):
+            continue
+        if path and (current != str(path)):
+            opened = session.open(str(path))
+            if not opened.ok:
+                fail(opened.error)
+            current = str(path)
+        result = session.execute(operation, parameters)
+        if not result.ok:
+            fail(result.error)
+        record = result.value.model_dump()
+        if jsonl:
+            sys.stdout.write(json.dumps(record, ensure_ascii=False) + "\n")
+        else:
+            outputs.append(record)
+    if not jsonl:
+        emit_json({"results": outputs})
+
+
+@app.command("export-native-pseudocode")
+def export_native_pseudocode(
+    path: str = typer.Argument(...),
+    directory: str = typer.Argument(...),
+    function: list[str] = typer.Option([], "--function"),
+    max_bytes: int = typer.Option(64000, "--max-bytes"),
+    provider: str | None = typer.Option(None, "--provider"),
+) -> None:
+    """Write pseudocode files into a resumable directory."""
+    import re as _re
+
+    session, _config = _session()
+    opened = session.open(path, provider_id=provider)
+    if not opened.ok:
+        fail(opened.error)
+    names = function
+    if not names:
+        listing = session.execute("list_procedures", {})
+        if not listing.ok:
+            fail(listing.error)
+        data = listing.value.normalized_result
+        rows = data.get("procedures") if isinstance(data, dict) else data
+        if isinstance(rows, dict):
+            rows = rows.get("functions") or rows.get("procedures") or []
+        names = [
+            str(item.get("name"))
+            for item in (rows or [])
+            if isinstance(item, dict) and item.get("name")
+        ][:100]
+    output = Path(directory).expanduser()
+    output.mkdir(parents=True, exist_ok=True)
+    written = []
+    skipped = []
+    for name in names:
+        safe = _re.sub(r"[^a-zA-Z0-9_.-]+", "_", name).strip("_") or "function"
+        destination = output / f"{safe}.c"
+        if destination.exists():
+            skipped.append(str(destination))
+            continue
+        result = session.execute("decompile", {"function": name, "max_bytes": max_bytes})
+        if not result.ok:
+            skipped.append(str(destination))
+            continue
+        normalized = result.value.normalized_result
+        text = normalized.get("pseudocode") if isinstance(normalized, dict) else None
+        if not isinstance(text, str):
+            skipped.append(str(destination))
+            continue
+        destination.write_text(text, encoding="utf-8")
+        written.append(str(destination))
+    emit_json({"written": written, "skipped": skipped, "count": len(written)})
+
+
+@app.command("tool-status")
+def tool_status_command() -> None:
+    """Show verification status for craft and project tools."""
+    from ..application.tool_status import tool_status
+
+    emit_json(tool_status())
+
+
+@app.command("asset-generate")
+def asset_generate(
+    prompt: str = typer.Option(..., "--prompt"),
+    output: str = typer.Option(..., "--output"),
+) -> None:
+    """Generate one asset through REA_ASSET_COMMAND."""
+    from ..application.assets import generate_asset
+
+    result = generate_asset(prompt, output)
+    if not result.ok:
+        fail(result.error)
+    emit_json(result.value)
+
+
+@app.command("project-serve")
+def project_serve(
+    directory: str | None = typer.Option(None, "--directory"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(18766, "--port"),
+) -> None:
+    """Serve a small read-only local dashboard for projects."""
+    from pathlib import Path as _Path
+
+    from ..application.project_serve import serve_projects
+
+    serve_projects(
+        _Path(directory).expanduser() if directory else _Path.cwd(), host=host, port=port
+    )
+
+
 @app.command("mcp")
 def mcp(
     transport: str = typer.Option("stdio", "--transport", help="stdio or streamable-http."),
@@ -3462,6 +3940,9 @@ def mcp(
     ),
     available_only: bool = typer.Option(
         False, "--available-only", help="Hide tools for missing external providers."
+    ),
+    clean_room: bool = typer.Option(
+        False, "--clean-room", help="Advertise only tools that do not read target internals."
     ),
 ) -> None:
     """Run the MCP server over stdio or opt-in streamable HTTP."""
@@ -3484,11 +3965,12 @@ def mcp(
         resolve_toolset(selected_toolset or config.mcp_toolset, client=config.mcp_client)
     except ValueError as cause:
         fail(AnalysisInputError(operation="mcp", message=str(cause)))
-    if selected_toolset is not None or available_only:
+    if selected_toolset is not None or available_only or clean_room:
         config = config.model_copy(
             update={
                 **({"mcp_toolset": selected_toolset} if selected_toolset is not None else {}),
                 **({"mcp_available_only": True} if available_only else {}),
+                **({"mcp_clean_room": True} if clean_room else {}),
             }
         )
     if transport == "stdio":
@@ -3689,6 +4171,22 @@ def _load_record(source: str) -> Any:
     return parsed.value
 
 
+_CLI_REGISTRY_SYNCED = False
+
+
+def _sync_cli_registry() -> None:
+    global _CLI_REGISTRY_SYNCED
+    if _CLI_REGISTRY_SYNCED:
+        return
+    import typer.main
+
+    from ..tooling.registry import sync_cli_names
+
+    command = cast("Any", typer.main.get_command(app))
+    sync_cli_names(list(command.commands))
+    _CLI_REGISTRY_SYNCED = True
+
+
 __all__ = ["app"]
 
 
@@ -3707,3 +4205,6 @@ def completions(
     command = cast("Any", typer.main.get_command(app))
     completion = completion_class(command, {}, "rea", "_REA_COMPLETE")
     typer.echo(completion.source())
+
+
+_sync_cli_registry()
