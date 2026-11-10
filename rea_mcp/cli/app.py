@@ -1473,13 +1473,14 @@ def command_schema(name: str = typer.Argument(..., help="CLI command name.")) ->
         fail(AnalysisInputError(operation="schema", message=f"unknown command: {name}"))
     parameters = []
     for parameter in subcommand.params:
+        type_value = getattr(parameter, "type", None)
         parameters.append(
             {
                 "name": parameter.name,
                 "opts": list(getattr(parameter, "opts", [])),
                 "required": bool(parameter.required),
                 "default": None if parameter.default is None else str(parameter.default),
-                "type": type(parameter.type).__name__,
+                "type": type(type_value).__name__ if type_value is not None else "unknown",
             }
         )
     emit_json({"command": name, "help": subcommand.help, "parameters": parameters})

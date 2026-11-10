@@ -509,3 +509,28 @@ def test_structured_request_stdin_jsonl(elf_file: Path) -> None:
     record = json.loads(lines[0])
     assert record["operation"] == "inspect_binary_layout"
     assert record["evidence_id"].startswith("ev_")
+
+
+def test_schema_tolerates_parameter_without_type(monkeypatch) -> None:
+    from typing import ClassVar
+
+    import typer.main
+
+    class Param:
+        name = "path"
+        opts: ClassVar[list[str]] = []
+        required = True
+        default = None
+
+    class Command:
+        help = "fake"
+        params: ClassVar[list[Param]] = [Param()]
+
+    class App:
+        commands: ClassVar[dict[str, Command]] = {"fake": Command()}
+
+    monkeypatch.setattr(typer.main, "get_command", lambda app: App())
+    result = runner.invoke(app, ["schema", "fake"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["parameters"][0]["type"] == "unknown"

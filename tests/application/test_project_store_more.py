@@ -112,3 +112,22 @@ def test_analysis_cache_reuses_evidence_across_sessions(tmp_path: Path, monkeypa
     result = second.execute("inspect_binary_layout")
     assert result.ok
     assert result.value.evidence_id == first_result.value.evidence_id
+
+
+def test_project_lock_survives_missing_fcntl(tmp_path: Path, monkeypatch) -> None:
+    import importlib
+
+    from rea_mcp.application.project_store import _project_lock
+
+    real_import = importlib.import_module
+
+    def fake_import(name: str, package: str | None = None):
+        if name == "fcntl":
+            raise ModuleNotFoundError("No module named 'fcntl'")
+        return real_import(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    root = tmp_path / "lock"
+    root.mkdir()
+    with _project_lock(root):
+        assert (root / ".rea-project.lock").is_file()

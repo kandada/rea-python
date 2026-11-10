@@ -55,7 +55,7 @@ def _project_lock(root: Path) -> Iterator[None]:
                 pass
             yield
         finally:
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(OSError, ImportError):
                 import importlib
 
                 fcntl = importlib.import_module("fcntl")

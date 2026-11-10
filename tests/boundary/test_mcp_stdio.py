@@ -88,7 +88,7 @@ async def _call_tool_with_tiny_budget(path: str) -> str:
 
 
 def test_stdio_tool_result_budget_returns_envelope() -> None:
-    message = asyncio.run(asyncio.wait_for(_call_tool_with_tiny_budget("/bin/ls"), timeout=60))
+    message = asyncio.run(asyncio.wait_for(_call_tool_with_tiny_budget(sys.executable), timeout=60))
     assert "RESOURCE_CONSTRAINT" in message
     assert "evidence_reference" in message
     assert "ev_" in message
