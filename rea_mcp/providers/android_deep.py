@@ -7,7 +7,6 @@ from the resulting Java sources. JADX is never installed by REA.
 from __future__ import annotations
 
 import atexit
-import shlex
 import shutil
 import tempfile
 from pathlib import Path
@@ -17,6 +16,7 @@ from ..domain.analysis_error import AnalysisError, AnalysisInputError
 from ..domain.analysis_profile import ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
+from ..process.argv import split_command
 from ..process.supervision import run_owned_process
 from .base import AnalysisExecution, CapabilityDescriptor, CapabilityEffects
 from .engines import _CliEngine, _jadx_operation_timeout
@@ -96,7 +96,7 @@ class AndroidDeepProvider(_CliEngine):
             return ok(cached)
         root = Path(tempfile.mkdtemp(prefix="rea-jadx-deep-"))
         result = run_owned_process(
-            [*shlex.split(command), "--no-res", "-d", str(root), apk],
+            [*split_command(command), "--no-res", "-d", str(root), apk],
             timeout=_jadx_operation_timeout(),
             operation=operation,
             max_output_bytes=512 * 1024,

@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shlex
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -20,6 +19,8 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
+
+from ..process.argv import split_command
 
 _DEFAULT_JEB_URL = "http://127.0.0.1:8425/mcp"
 
@@ -76,7 +77,7 @@ def load_ida_config() -> McpServerConfig | None:
         return McpServerConfig("http", url=url)
     command = os.environ.get("REA_IDA_MCP_COMMAND")
     if command:
-        parts = shlex.split(command)
+        parts = split_command(command)
         return McpServerConfig("stdio", command=parts[0], args=parts[1:])
     return None
 

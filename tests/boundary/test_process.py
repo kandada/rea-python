@@ -64,3 +64,25 @@ def test_cancellation_is_prompt_and_preserves_output() -> None:
     assert result.error.tag == "AnalysisCancelledError"
     assert elapsed < 10
     assert "started" in str(result.error.details.get("stdout"))
+
+
+def test_split_command_posix_and_empty() -> None:
+    from rea_mcp.process.argv import split_command
+
+    assert split_command("python -c 'print(1)'") == ["python", "-c", "print(1)"]
+    assert split_command("   ") == []
+
+
+def test_split_command_keeps_windows_paths(monkeypatch) -> None:
+    from rea_mcp.process import argv
+
+    monkeypatch.setattr(argv.os, "name", "nt")
+    assert argv.split_command(r"C:\tools\app.exe --flag {prompt}") == [
+        r"C:\tools\app.exe",
+        "--flag",
+        "{prompt}",
+    ]
+    assert argv.split_command(r'"C:\Program Files\App\app.exe" "a b"') == [
+        r"C:\Program Files\App\app.exe",
+        "a b",
+    ]

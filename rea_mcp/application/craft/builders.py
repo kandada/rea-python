@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 import shutil
 import subprocess
 import time
@@ -14,6 +13,7 @@ from typing import Any
 from ...domain.analysis_error import AnalysisError, AnalysisInputError
 from ...domain.project import ProjectUsage
 from ...domain.result import Result, err, ok
+from ...process.argv import split_command
 from ..project_store import ProjectStore
 from .api_builder import api_configured, run_api_builder
 
@@ -38,7 +38,7 @@ def _env_command() -> BuilderAdapter | None:
     if not configured:
         return None
     try:
-        parts = shlex.split(configured)
+        parts = split_command(configured)
     except ValueError:
         return None
     if not parts:
@@ -75,11 +75,11 @@ def resolve_builder(name: str | None = None) -> Result[BuilderAdapter, AnalysisE
                 )
             )
         if selected == "dsh":
-            return ok(BuilderAdapter(selected, [program, *shlex.split(arg)], stdin_prompt=True))
-        return ok(BuilderAdapter(selected, [program, *shlex.split(arg), "{prompt}"]))
+            return ok(BuilderAdapter(selected, [program, *split_command(arg)], stdin_prompt=True))
+        return ok(BuilderAdapter(selected, [program, *split_command(arg), "{prompt}"]))
     if selected:
         try:
-            parts = shlex.split(selected)
+            parts = split_command(selected)
         except ValueError:
             return err(
                 AnalysisInputError(

@@ -10,7 +10,6 @@ import contextlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -27,6 +26,7 @@ from ..domain.analysis_error import (
 from ..domain.analysis_profile import ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
+from ..process.argv import split_command
 from ..process.supervision import ProcessResult, run_owned_process
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .external import ToolResolution, resolve_shell_command, resolve_tool
@@ -283,7 +283,7 @@ class ApktoolProvider(_CliEngine):
         assert command is not None
         if operation == "inspect_apktool_client":
             probed = run_owned_process(
-                [*shlex.split(command), "--version"], timeout=60, operation=operation
+                [*split_command(command), "--version"], timeout=60, operation=operation
             )
             if not probed.ok:
                 return err(probed.error)
@@ -300,7 +300,7 @@ class ApktoolProvider(_CliEngine):
             )
         output_dir = tempfile.mkdtemp(prefix="rea_mcp-apktool-")
         try:
-            argv = [*shlex.split(command), "d", "-f", "-o", output_dir, target.path]
+            argv = [*split_command(command), "d", "-f", "-o", output_dir, target.path]
             result = run_owned_process(argv, timeout=300, operation=operation)
             if not result.ok:
                 return err(result.error)
@@ -1292,7 +1292,7 @@ class AdbProvider(_CliEngine):
         argv = _adb_argv(
             adb,
             serial,
-            ["shell", *(command if isinstance(command, list) else shlex.split(str(command)))],
+            ["shell", *(command if isinstance(command, list) else split_command(str(command)))],
         )
         result = self._run(argv, "adb_shell", timeout=float(parameters.get("timeout") or 60))
         if not result.ok:
@@ -1343,7 +1343,7 @@ class JadxProvider(_CliEngine):
         assert command is not None
         output_dir = tempfile.mkdtemp(prefix="rea_mcp-jadx-")
         try:
-            argv = [*shlex.split(command), "--no-res", "-d", output_dir, target.path]
+            argv = [*split_command(command), "--no-res", "-d", output_dir, target.path]
             result = run_owned_process(
                 argv,
                 timeout=_jadx_operation_timeout(),
@@ -1742,7 +1742,7 @@ class KunaProvider(_CliEngine):
             )
         if operation in ("list_strings", "search_strings"):
             argv = [
-                *shlex.split(command),
+                *split_command(command),
                 "strings",
                 target.path,
                 "--json",
@@ -1785,7 +1785,7 @@ class KunaProvider(_CliEngine):
             if not address.ok:
                 return address
             argv = [
-                *shlex.split(command),
+                *split_command(command),
                 "xrefs",
                 target.path,
                 "--to",
@@ -1811,7 +1811,7 @@ class KunaProvider(_CliEngine):
             )
         if operation == "procedure_callees":
             argv = [
-                *shlex.split(command),
+                *split_command(command),
                 "decompile-graph",
                 target.path,
                 "--functions",
@@ -1839,7 +1839,7 @@ class KunaProvider(_CliEngine):
         if not address.ok:
             return address
         argv = [
-            *shlex.split(command),
+            *split_command(command),
             "decompile",
             target.path,
             address.value,
@@ -1920,7 +1920,7 @@ class KunaProvider(_CliEngine):
             command,
             target_path,
             "functions",
-            [*shlex.split(command), "functions", target_path, "--json", *raw_args],
+            [*split_command(command), "functions", target_path, "--json", *raw_args],
             operation,
         )
 
@@ -1937,7 +1937,7 @@ class KunaProvider(_CliEngine):
         try:
             result = self._run(
                 [
-                    *shlex.split(command),
+                    *split_command(command),
                     "decompile-project",
                     target_path,
                     "-o",

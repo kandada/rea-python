@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 from typing import Any
 
 from ..domain.analysis_error import (
@@ -14,6 +13,7 @@ from ..domain.analysis_error import (
 from ..domain.analysis_profile import ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
+from ..process.argv import split_command
 from ..process.supervision import run_owned_process
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .external import ToolResolution, resolve_tool
@@ -90,7 +90,7 @@ class CSharpDecompilerProvider(AnalysisProvider):
                     message="decompile_managed_csharp requires an exact type name",
                 )
             )
-        argv = [*shlex.split(resolution.path), "-t", type_name]
+        argv = [*split_command(resolution.path), "-t", type_name]
         if method:
             argv.extend(["-m", method])
         argv.append(target.path)

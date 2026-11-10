@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-import shlex
 from typing import Any
 
 from ..domain.analysis_error import (
@@ -22,6 +21,7 @@ from ..domain.analysis_error import (
 from ..domain.analysis_profile import ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import err, ok
+from ..process.argv import split_command
 from ..process.supervision import run_owned_process
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .external import optional_import
@@ -748,7 +748,7 @@ class RecordedCrashProvider(_OptionalEngine):
             "print(json.dumps({'exe':sys.argv[2],'registers':{k:str(v) for k,v in c.registers.items()},"
             "'signal':getattr(c,'signal',None)}))"
         )
-        argv = [*shlex.split(python), "-c", script, target.path, str(executable)]
+        argv = [*split_command(python), "-c", script, target.path, str(executable)]
         result = run_owned_process(argv, timeout=120, operation=operation)
         if not result.ok:
             return err(result.error)

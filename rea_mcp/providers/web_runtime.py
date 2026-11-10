@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import signal
 import socket
 import subprocess
@@ -31,6 +30,7 @@ from ..domain.analysis_error import (
 from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
+from ..process.argv import split_command
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .external import optional_import
 from .registry import TargetSupport
@@ -130,7 +130,7 @@ def _launch_electron(
     port = int(parameters.get("port") or 0) or _free_port()
     extra = parameters.get("launch_args") or []
     if isinstance(extra, str):
-        extra = shlex.split(extra)
+        extra = split_command(extra)
     arguments = [
         executable,
         app,

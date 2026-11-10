@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 from pathlib import Path
 
 from ..domain.analysis_error import AnalysisError, AnalysisInputError
 from ..domain.result import Result, err, ok
+from ..process.argv import split_command
 
 
 def generate_asset(prompt: str, output: str) -> Result[dict[str, object], AnalysisError]:
@@ -24,10 +24,10 @@ def generate_asset(prompt: str, output: str) -> Result[dict[str, object], Analys
     destination.parent.mkdir(parents=True, exist_ok=True)
     parts = [
         part.replace("{prompt}", prompt).replace("{output}", str(destination))
-        for part in shlex.split(command)
+        for part in split_command(command)
     ]
-    if not any("{prompt}" in part or "{output}" in part for part in shlex.split(command)):
-        parts = [*shlex.split(command), prompt, str(destination)]
+    if not any("{prompt}" in part or "{output}" in part for part in split_command(command)):
+        parts = [*split_command(command), prompt, str(destination)]
     try:
         process = subprocess.run(
             parts,

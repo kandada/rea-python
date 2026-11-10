@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import tempfile
 import zipfile
 from collections import Counter
@@ -14,6 +13,7 @@ from ..domain.analysis_error import AnalysisError, AnalysisInputError
 from ..domain.analysis_profile import AnalysisProfile, ProviderIdentity
 from ..domain.binary_target import BinaryTarget
 from ..domain.result import Result, err, ok
+from ..process.argv import split_command
 from .base import AnalysisExecution, AnalysisProvider, CapabilityDescriptor, CapabilityEffects
 from .registry import TargetSupport
 
@@ -236,7 +236,7 @@ class MitmproxyProvider(AnalysisProvider):
         duration = float(parameters.get("duration", 5.0))
         port = int(parameters.get("port", 8080))
         har_path = Path(tempfile.mkdtemp(prefix="rea_mcp-mitm-")) / "flows.har"
-        argv = [*shlex.split(command), "-q", "-p", str(port), "--set", f"hardump={har_path}"]
+        argv = [*split_command(command), "-q", "-p", str(port), "--set", f"hardump={har_path}"]
         run_owned_process(argv, timeout=duration, operation=operation)
         requests: list[dict[str, Any]] = []
         if har_path.is_file():
