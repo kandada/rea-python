@@ -23,6 +23,7 @@ TargetFormat = Literal[
     "pe",
     "mach-o",
     "mach-o-universal",
+    "java-class",
     "wasm",
     "zip",
     "apk",
@@ -125,7 +126,7 @@ def detect_format(prefix: bytes) -> Detection:
     if prefix[:4] in _MACHO_MAGICS:
         return _detect_macho(prefix)
     if prefix[:4] in _FAT_MAGICS:
-        return "mach-o-universal", None, ()
+        return _detect_fat_or_java(prefix), None, ()
     if prefix[:4] == b"\x00asm":
         return "wasm", None, ()
     if prefix[:4] in _PCAP_MAGICS:
@@ -137,6 +138,15 @@ def detect_format(prefix: bytes) -> Detection:
     if prefix[:16] == b"SQLite format 3\x00":
         return "sqlite", None, ()
     return "unknown", None, ()
+
+
+def _detect_fat_or_java(prefix: bytes) -> TargetFormat:
+    if len(prefix) >= 8:
+        fat_count = int.from_bytes(prefix[4:8], "big")
+        major = int.from_bytes(prefix[6:8], "big")
+        if fat_count > 32 and 45 <= major <= 100:
+            return "java-class"
+    return "mach-o-universal"
 
 
 def _detect_elf(prefix: bytes) -> Detection:
@@ -194,6 +204,8 @@ def _kind_from_format(target_format: TargetFormat, path: Path, prefix: bytes) ->
         kind = _elf_kind(prefix)
         if kind is not None:
             return kind
+    if target_format == "java-class":
+        return "object"
     if target_format in ("apk", "asar"):
         return "package"
     if target_format == "zip":

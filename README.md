@@ -32,7 +32,7 @@ You must legally obtain and be authorized to use commercial tools, including IDA
 
 rea-python is a provider-neutral reverse-engineering engine that returns traceable, evidence-carrying, reusable results, exposed through a shared CLI and MCP (Model Context Protocol) server. Its design follows the ideas behind [morluto/rea](https://github.com/morluto/rea), including the Evidence model: every result carries its identity, confidence, authority, limitations, and unresolved unknowns, so an AI agent (or a person) can reason honestly instead of trusting a bare answer.
 
-> Status: **alpha (0.1.60)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (292 MCP tools, 323 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
+> Status: **alpha (0.1.61)** — the original 169 upstream MCP tool names and 153 CLI commands, plus compatibility/extras (292 MCP tools, 325 CLI commands) with built-in static providers, the Evidence model, snapshot caching, deep-engine adapters, workflow/evidence tools, and gated runtime observation.
 
 ## Upstream sync
 
@@ -112,7 +112,7 @@ An Electron runtime is auto-detected under `vendor/tools/electron/node_modules/.
 rea capture-electron-scenario --app ./electron-app --steps-json '[{"action":"screenshot","path":"shot.png"}]'
 ```
 
-External-tool providers are caller-supplied: rea-mcp never installs them and reports an actionable reason when one is missing (`rea-mcp doctor`). Cross-cutting tools: `compare` / `compare-network-captures` / `compare-web-captures` / `compare-managed-members` (target and Evidence diffs), `build-reconstruction-obligation-ledger` / `evaluate-reconstruction-coverage` (reconstruction), `capture-process` (bounded runtime capture), `doctor` (readiness), `setup` (client registration, plus `--write-all` and `--install-skill`), `update`, and `evidence-export` / `evidence-import` / `inspect-analysis-view` (portable Evidence).
+External-tool providers are caller-supplied: rea-mcp never installs them and reports an actionable reason when one is missing (`rea-mcp doctor`). Cross-cutting tools: `compare` / `compare-network-captures` / `compare-web-captures` / `compare-managed-members` (target and Evidence diffs), `build-reconstruction-obligation-ledger` / `evaluate-reconstruction-coverage` (reconstruction), `capture-process` (bounded runtime capture), `doctor` (readiness), `setup` (client registration, plus `--write-all` and `--install-skill`), `update` (with optional `--check`), `evidence-get` / `evidence-list`, and `evidence-export` / `evidence-import` / `inspect-analysis-view` (portable Evidence). Unknowns and Evidence written by the CLI are persisted under the nearest project root or a `.rea/evidence.json` sidecar and can be queried with `list-unknowns`, `evidence-get`, and `evidence-list`.
 
 Agent environments are an extension beyond the 6.7.0 upstream surface. From an `environment-manifest` Evidence record and its parent capture:
 
@@ -192,7 +192,7 @@ project/
 Website checks compare the original and the build at 1440/768/390 px using screenshots,
 layout, text and structure. Build checks support npm, Cargo, Python and static sites.
 `game-self-test` and runtime checks are framework-level placeholders until their external
-engines or OS APIs are available. Java archive/class inventory is implemented; Java
+engines or OS APIs are available. Java archive/class inventory is implemented (including optional nested JAR counts and multi-release listing); Java
 decompilation uses optional Vineflower.
 
 Builders are caller-supplied: `REA_CRAFT_BUILDER` or `REA_CRAFT_BUILDER_COMMAND` (for example

@@ -23,6 +23,9 @@ _OUTPUT_FILTER: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar
 _TOKEN_COUNT: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "rea_cli_token_count", default=False
 )
+_OUTPUT_DIR: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "rea_cli_output_dir", default=None
+)
 
 
 def set_output_budget(budget: int) -> None:
@@ -36,6 +39,10 @@ def set_output_filter(spec: str | None) -> None:
 
 def set_token_count(enabled: bool) -> None:
     _TOKEN_COUNT.set(bool(enabled))
+
+
+def set_output_dir(directory: str | None) -> None:
+    _OUTPUT_DIR.set(Path(directory).expanduser().resolve() if directory else None)
 
 
 def _filter_payload(payload: Any, paths: tuple[str, ...]) -> Any:
@@ -127,12 +134,19 @@ def emit_json(payload: Any, *, force: bool = False) -> None:
     budget = _OUTPUT_BUDGET.get()
     encoded = text.encode("utf-8")
     if budget > 0 and len(encoded) > budget:
-        digest = hashlib.sha256(encoded).hexdigest()[:12]
-        destination = Path(tempfile.gettempdir()) / f"rea-cli-{os.getpid()}-{digest}.json"
+        full_digest = hashlib.sha256(encoded).hexdigest()
+        digest = full_digest[:12]
+        name = f"rea-cli-{os.getpid()}-{digest}.json"
+        configured_dir = _OUTPUT_DIR.get()
+        destination = (
+            (configured_dir / name) if configured_dir else (Path(tempfile.gettempdir()) / name)
+        )
+        if configured_dir is not None:
+            configured_dir.mkdir(parents=True, exist_ok=True)
         try:
             destination.write_bytes(encoded)
         except OSError:
-            destination = Path.cwd() / f"rea-cli-{os.getpid()}-{digest}.json"
+            destination = Path.cwd() / name
             destination.write_bytes(encoded)
         payload = {
             "truncated": True,
@@ -140,6 +154,7 @@ def emit_json(payload: Any, *, force: bool = False) -> None:
             "budget_bytes": budget,
             "result_bytes": len(encoded),
             "output_path": str(destination),
+            "sha256": full_digest,
             "summary": _summary(payload),
         }
         text = json.dumps(
@@ -181,6 +196,7 @@ __all__ = [
     "fail",
     "is_tty",
     "set_output_budget",
+    "set_output_dir",
     "set_output_filter",
     "set_token_count",
 ]

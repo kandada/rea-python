@@ -14,7 +14,8 @@ from ..domain.result import Result, err, ok
 
 def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     subject = record.get("subject") or {}
-    return {
+    normalized = record.get("normalized_result")
+    result = {
         "kind": "record",
         "evidence_id": record.get("evidence_id"),
         "operation": record.get("operation"),
@@ -29,10 +30,28 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         else None,
         "provider": (record.get("provider") or {}).get("id"),
         "limitations": record.get("limitations", []),
-        "result_keys": sorted(record.get("normalized_result", {}).keys())
-        if isinstance(record.get("normalized_result"), dict)
-        else None,
+        "result_keys": sorted(normalized.keys()) if isinstance(normalized, dict) else None,
     }
+    if isinstance(normalized, dict) and record.get("operation") in (
+        "inspect_java_archive",
+        "inspect_java_class",
+    ):
+        keys = (
+            "class_count",
+            "nested_class_count",
+            "total_class_count",
+            "package_count",
+            "main_class",
+            "nested_jar_count",
+            "multi_release_versions",
+            "class",
+            "super",
+            "major",
+            "method_count",
+            "field_count",
+        )
+        result["summary"] = {key: normalized.get(key) for key in keys if key in normalized}
+    return result
 
 
 def summarize_bundle(bundle: dict[str, Any]) -> dict[str, Any]:

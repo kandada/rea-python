@@ -534,3 +534,62 @@ def test_schema_tolerates_parameter_without_type(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["parameters"][0]["type"] == "unknown"
+
+
+def test_normalize_global_options_moves_after_command() -> None:
+    from rea_mcp.main.entry import normalize_global_options
+
+    assert normalize_global_options(
+        ["inspect-java-archive", "x.jar", "--output-budget", "5000"]
+    ) == ["--output-budget", "5000", "inspect-java-archive", "x.jar"]
+    assert normalize_global_options(
+        ["inspect-java-archive", "x.jar", "--filter-output", "a.b", "--token-count"]
+    ) == ["--filter-output", "a.b", "--token-count", "inspect-java-archive", "x.jar"]
+    assert normalize_global_options(["inspect", "x", "--", "--output-budget", "1"]) == [
+        "inspect",
+        "x",
+        "--",
+        "--output-budget",
+        "1",
+    ]
+
+
+def test_output_budget_uses_configured_directory(pe_clr_file: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "budget"
+    result = runner.invoke(
+        app,
+        [
+            "--output-budget",
+            "100",
+            "--output-dir",
+            str(output_dir),
+            "inspect-managed-members",
+            str(pe_clr_file),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["truncated"] is True
+    assert payload["sha256"]
+    assert Path(payload["output_path"]).parent == output_dir
+    assert Path(payload["output_path"]).is_file()
+
+
+def test_update_check_cli(monkeypatch) -> None:
+    from rea_mcp.application import updater
+
+    monkeypatch.setattr(
+        updater,
+        "update_report",
+        lambda current, check: {
+            "current_version": current,
+            "channel": "pypi",
+            "latest_version": "0.1.61",
+            "upgrade_available": True,
+        },
+    )
+    result = runner.invoke(app, ["update", "--check"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["upgrade_available"] is True
+    assert payload["latest_version"] == "0.1.61"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
@@ -203,6 +204,15 @@ def _vineflower() -> tuple[str, bool] | None:
     return (found, False) if found else None
 
 
+def _cfr() -> tuple[str, bool] | None:
+    configured = os.environ.get("REA_CFR")
+    if configured:
+        path = Path(configured).expanduser()
+        return (str(path), path.suffix.lower() == ".jar")
+    found = shutil.which("cfr")
+    return (found, False) if found else None
+
+
 def _read_class(path: Path, class_name: str | None = None) -> bytes:
     if path.suffix.lower() == ".class":
         return path.read_bytes()
@@ -214,6 +224,46 @@ def _read_class(path: Path, class_name: str | None = None) -> bytes:
         with zipfile.ZipFile(path) as archive:
             return archive.read(wanted)
     raise ValueError("expected a .class file or a Java archive")
+
+
+def _nested_archive_classes(
+    archive: zipfile.ZipFile,
+    prefix: str,
+    *,
+    depth: int,
+    classes: list[str],
+    limit: int = 5000,
+) -> int:
+    """Collect class names from nested archives without extracting to disk."""
+
+    if depth > 2 or len(classes) >= limit:
+        return 0
+    added = 0
+    for info in archive.infolist():
+        name = info.filename
+        if info.is_dir() or not name.lower().endswith((".jar", ".war", ".ear")):
+            continue
+        if info.file_size > 32 * 1024 * 1024 or len(classes) >= limit:
+            continue
+        try:
+            payload = archive.read(info)
+            with zipfile.ZipFile(io.BytesIO(payload)) as nested:
+                for nested_name in nested.namelist():
+                    if nested_name.endswith(".class") and not nested_name.endswith("/"):
+                        classes.append(f"{prefix}!/{name}!/{nested_name}")
+                        added += 1
+                        if len(classes) >= limit:
+                            return added
+                added += _nested_archive_classes(
+                    nested,
+                    f"{prefix}!/{name}",
+                    depth=depth + 1,
+                    classes=classes,
+                    limit=limit,
+                )
+        except (OSError, ValueError, zipfile.BadZipFile):
+            continue
+    return added
 
 
 class JavaProvider(AnalysisProvider):
@@ -237,7 +287,12 @@ class JavaProvider(AnalysisProvider):
         path = Path(target.path)
         if path.suffix.lower() in (".jar", ".war", ".ear") or path.suffix.lower() == ".class":
             return TargetSupport("supported")
-        if target.format == "zip" and path.suffix.lower() in (".jar", ".war", ".ear"):
+        if target.format in ("zip", "java-class") and path.suffix.lower() in (
+            ".jar",
+            ".war",
+            ".ear",
+            ".class",
+        ):
             return TargetSupport("supported")
         return TargetSupport(
             "unsupported", reason="not a Java class or archive", code="target_format_unsupported"
@@ -257,9 +312,14 @@ class JavaProvider(AnalysisProvider):
                 return err(AnalysisInputError(operation=operation, message="not a Java archive"))
             try:
                 with zipfile.ZipFile(path) as archive:
-                    names = _classes_in_archive(path)
+                    all_names = archive.namelist()
+                    names = sorted(
+                        name
+                        for name in all_names
+                        if name.endswith(".class") and not name.endswith("/")
+                    )
                     manifest_text = ""
-                    if "META-INF/MANIFEST.MF" in archive.namelist():
+                    if "META-INF/MANIFEST.MF" in all_names:
                         manifest_text = archive.read("META-INF/MANIFEST.MF").decode(
                             "utf-8", errors="replace"
                         )
@@ -274,20 +334,47 @@ class JavaProvider(AnalysisProvider):
                         ),
                         None,
                     )
+                    nested_jars = sorted(
+                        name
+                        for name in all_names
+                        if name.lower().endswith((".jar", ".war", ".ear"))
+                        and not name.endswith("/")
+                    )
+                    multi_release = sorted(
+                        name for name in names if name.startswith("META-INF/versions/")
+                    )
+                    expanded: list[str] = []
+                    nested_class_count = 0
+                    if parameters.get("nested"):
+                        nested_class_count = _nested_archive_classes(
+                            archive, "archive", depth=0, classes=expanded
+                        )
+                        names = [*names, *expanded]
             except (OSError, zipfile.BadZipFile, ValueError) as cause:
                 return err(AnalysisInputError(operation=operation, message=str(cause)))
+            versions = sorted(
+                {name.split("/", 3)[2] for name in multi_release if len(name.split("/")) > 3}
+            )
             return ok(
                 AnalysisExecution(
                     result={
                         "format": "java-archive",
-                        "class_count": len(names),
+                        "class_count": len(names) - nested_class_count,
+                        "nested_class_count": nested_class_count,
+                        "total_class_count": len(names),
+                        "package_count": len(packages),
                         "packages": packages[:500],
                         "main_class": main,
+                        "nested_jar_count": len(nested_jars),
+                        "nested_jars": nested_jars[:200],
+                        "multi_release": multi_release[:500],
+                        "multi_release_versions": versions,
                         "classes": names[:2000],
                     },
                     provider=self.identity(),
                     limitations=(
-                        "Class entries only; nested JARs and multi-release variants are not expanded.",
+                        "Class entries only; nested JARs require parameters.nested=true. "
+                        "Multi-release variants are listed but not overlaid on base classes.",
                     ),
                 )
             )
@@ -309,27 +396,70 @@ class JavaProvider(AnalysisProvider):
                 parsed = _parse_class(_read_class(path, parameters.get("class_name")))
             except (OSError, ValueError, zipfile.BadZipFile, KeyError) as cause:
                 return err(AnalysisInputError(operation=operation, message=str(cause)))
-            return ok(AnalysisExecution(result=parsed, provider=self.identity()))
+            resolved = {"class_name": parsed.get("class")} if parsed.get("class") else None
+            return ok(
+                AnalysisExecution(
+                    result=parsed,
+                    provider=self.identity(),
+                    resolved_parameters=resolved,
+                )
+            )
         if operation == "decompile_java_class":
+            choice = str(
+                parameters.get("decompiler") or os.environ.get("REA_JAVA_DECOMPILER") or "auto"
+            ).lower()
+            if choice not in ("auto", "vineflower", "cfr"):
+                return err(
+                    AnalysisInputError(
+                        operation=operation,
+                        message="decompiler must be auto, vineflower, or cfr",
+                    )
+                )
             vineflower = _vineflower()
+            cfr = _cfr()
             java = _java()
-            if not vineflower or (vineflower[1] and not java):
+            selected: tuple[str, str, bool] | None = None
+            if choice in ("auto", "vineflower") and vineflower and (not vineflower[1] or java):
+                selected = ("vineflower", vineflower[0], vineflower[1])
+            if selected is None and choice in ("auto", "cfr") and cfr and (not cfr[1] or java):
+                selected = ("cfr", cfr[0], cfr[1])
+            if selected is None:
+                if choice == "vineflower" or (choice == "auto" and vineflower):
+                    missing = "Java runtime" if vineflower and vineflower[1] else "Vineflower"
+                    message = f"{missing} is not installed"
+                elif choice == "cfr" or (choice == "auto" and cfr):
+                    missing = "Java runtime" if cfr and cfr[1] else "CFR"
+                    message = f"{missing} is not installed"
+                else:
+                    message = "No Java decompiler is installed"
                 return err(
                     AnalysisCapabilityUnavailableError(
-                        message="Vineflower or Java is not installed",
+                        message=message,
                         provider_id=_PROVIDER.id,
                         operation=operation,
                         reason="provider_unavailable",
-                        remediation_action="Install a JDK and Vineflower, or set REA_JAVA/REA_VINEFLOWER.",
+                        remediation_action=(
+                            "Install a JDK and Vineflower or CFR; set REA_JAVA, "
+                            "REA_VINEFLOWER, or REA_CFR."
+                        ),
+                        details={"requested_decompiler": choice},
                     )
                 )
+            name, executable, is_jar = selected
             output = Path(tempfile.mkdtemp(prefix="rea-java-"))
             try:
-                command = (
-                    [str(java), "-jar", vineflower[0], str(path), str(output)]
-                    if vineflower[1]
-                    else [vineflower[0], str(path), str(output)]
-                )
+                if name == "vineflower":
+                    command = (
+                        [str(java), "-jar", executable, str(path), str(output)]
+                        if is_jar
+                        else [executable, str(path), str(output)]
+                    )
+                else:
+                    command = (
+                        [str(java), "-jar", executable, str(path), "--outputdir", str(output)]
+                        if is_jar
+                        else [executable, str(path), "--outputdir", str(output)]
+                    )
                 result = subprocess.run(
                     command,
                     capture_output=True,
@@ -338,12 +468,17 @@ class JavaProvider(AnalysisProvider):
                 )
                 if result.returncode != 0:
                     return err(
-                        AnalysisInputError(operation=operation, message=result.stderr[-1000:])
+                        AnalysisInputError(
+                            operation=operation,
+                            message=(result.stderr or result.stdout)[-1000:],
+                            details={"decompiler": name},
+                        )
                     )
                 files = list(output.rglob("*.java"))
                 return ok(
                     AnalysisExecution(
                         result={
+                            "decompiler": name,
                             "file_count": len(files),
                             "files": [str(item.relative_to(output)) for item in files[:200]],
                             "source": files[0].read_text(encoding="utf-8", errors="replace")[
@@ -353,11 +488,17 @@ class JavaProvider(AnalysisProvider):
                             else "",
                         },
                         provider=self.identity(),
-                        limitations=("Vineflower output; not verified against a live JDK here.",),
+                        limitations=(f"{name} output; not verified against a live JDK here.",),
                     )
                 )
             except (OSError, subprocess.TimeoutExpired) as cause:
-                return err(AnalysisInputError(operation=operation, message=str(cause)))
+                return err(
+                    AnalysisInputError(
+                        operation=operation,
+                        message=str(cause),
+                        details={"decompiler": name},
+                    )
+                )
             finally:
                 import shutil as _shutil
 

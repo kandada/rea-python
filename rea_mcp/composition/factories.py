@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..application.investigation import InvestigationRecords
 from ..application.session import BinarySession
 from ..config.settings import AppConfig
 from ..providers.android import AndroidProvider
@@ -145,10 +146,12 @@ def create_registry(config: AppConfig) -> AnalysisProviderRegistry:
     return AnalysisProviderRegistry(build_providers(), config.analysis_provider)
 
 
-def create_binary_session(config: AppConfig) -> BinarySession:
+def create_binary_session(
+    config: AppConfig, records: InvestigationRecords | None = None
+) -> BinarySession:
     """Wire the shared session used by both CLI and MCP adapters."""
 
-    return BinarySession(create_registry(config))
+    return BinarySession(create_registry(config), records)
 
 
 __all__ = ["build_providers", "create_binary_session", "create_registry"]

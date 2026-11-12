@@ -45,14 +45,18 @@ def _global_options(
     token_count: bool = typer.Option(
         False, "--token-count", help="Print only the output token count."
     ),
+    output_dir: str | None = typer.Option(
+        None, "--output-dir", help="Directory for oversized JSON instead of the temp dir."
+    ),
 ) -> None:
     """Global options shared by every command."""
 
-    from .output import set_output_filter, set_token_count
+    from .output import set_output_dir, set_output_filter, set_token_count
 
     set_output_budget(output_budget or int(os.environ.get("REA_CLI_MAX_RESPONSE_BYTES", "0") or 0))
     set_output_filter(filter_output)
     set_token_count(token_count)
+    set_output_dir(output_dir)
     if version:
         from .. import __version__
 
@@ -63,9 +67,11 @@ def _global_options(
         raise typer.Exit()
 
 
-def _session() -> tuple[BinarySession, AppConfig]:
+def _session(
+    records: Any | None = None,
+) -> tuple[BinarySession, AppConfig]:
     config = AppConfig()
-    return create_binary_session(config), config
+    return create_binary_session(config, records), config
 
 
 def _run(
@@ -919,25 +925,37 @@ def setup(
 
 
 @app.command("update")
-def update() -> None:
+def update(
+    check: bool = typer.Option(False, "--check", help="Check PyPI for the latest release."),
+) -> None:
     """Report the installed version and update guidance."""
     from .. import __version__
+    from ..application.updater import update_report
 
-    emit_json({"current_version": __version__, "channel": "source"})
+    emit_json(update_report(__version__, check=check))
 
 
 @app.command("record-unknown")
 def record_unknown(
-    path: str = typer.Argument(...),
+    path: str = typer.Argument(
+        ..., help="Artifact/target to link; the ledger is stored under its project or sidecar root."
+    ),
     question: str = typer.Option(..., "--question"),
     domain: str = typer.Option(..., "--domain"),
     severity: str = typer.Option("medium", "--severity"),
     required_authority: str | None = typer.Option(None, "--required-authority"),
     required_confidence: str = typer.Option("observed", "--required-confidence"),
     provider: str | None = typer.Option(None, "--provider"),
+    project: str | None = typer.Option(None, "--project"),
 ) -> None:
-    """Record an unresolved investigation question."""
-    session, _config = _session()
+    """Record an unresolved investigation question and persist it."""
+    from ..application.evidence_store import discover_store
+
+    store = discover_store(target=path, project=project)
+    loaded = store.load()
+    if not loaded.ok:
+        fail(loaded.error)
+    session, _config = _session(loaded.value)
     opened = session.open(path, provider_id=provider)
     if not opened.ok:
         fail(opened.error)
@@ -950,7 +968,10 @@ def record_unknown(
     )
     if not result.ok:
         fail(result.error)
-    emit_json(result.value)
+    saved = store.save(loaded.value)
+    if not saved.ok:
+        fail(saved.error)
+    emit_json({**result.value, "store": saved.value})
 
 
 @app.command("update-unknown")
@@ -960,23 +981,56 @@ def update_unknown(
     status: str = typer.Option(..., "--status"),
     severity: str | None = typer.Option(None, "--severity"),
     provider: str | None = typer.Option(None, "--provider"),
+    project: str | None = typer.Option(None, "--project"),
 ) -> None:
-    """Update an unknown's status."""
-    session, _config = _session()
+    """Update an unknown's status and persist it."""
+    from ..application.evidence_store import discover_store
+
+    store = discover_store(target=path, project=project)
+    loaded = store.load()
+    if not loaded.ok:
+        fail(loaded.error)
+    session, _config = _session(loaded.value)
     opened = session.open(path, provider_id=provider)
     if not opened.ok:
         fail(opened.error)
     result = session.update_unknown(unknown_id, status, severity=severity)
     if not result.ok:
         fail(result.error)
-    emit_json(result.value)
+    saved = store.save(loaded.value)
+    if not saved.ok:
+        fail(saved.error)
+    emit_json({**result.value, "store": saved.value})
 
 
 @app.command("list-unknowns")
-def list_unknowns() -> None:
-    """List recorded unknowns (current revisions)."""
-    session, _config = _session()
-    emit_json({"unknowns": session.list_unknowns()})
+def list_unknowns(
+    project: str | None = typer.Option(None, "--project"),
+    status: str | None = typer.Option(None, "--status"),
+    domain: str | None = typer.Option(None, "--domain"),
+    limit: int = typer.Option(1000, "--limit", min=1, max=10000),
+) -> None:
+    """List persisted unknowns (current revisions)."""
+    from ..application.evidence_store import discover_store
+
+    store = discover_store(project=project)
+    loaded = store.load()
+    if not loaded.ok:
+        fail(loaded.error)
+    unknowns = [item.model_dump() for item in loaded.value.list_unknowns()]
+    if status is not None:
+        unknowns = [item for item in unknowns if item.get("status") == status]
+    if domain is not None:
+        unknowns = [item for item in unknowns if item.get("domain") == domain]
+    emit_json(
+        {
+            "project": None if store.project is None else str(store.project),
+            "store": str(store.path),
+            "source": store.source,
+            "count": len(unknowns),
+            "unknowns": unknowns[:limit],
+        }
+    )
 
 
 @app.command("snapshot-export")
@@ -2452,11 +2506,22 @@ def cutter_command(
 
 
 @app.command("get-evidence-bundle")
-def get_evidence_bundle(full: bool = typer.Option(False, "--full")) -> None:
-    """Return the session Evidence bundle (summary by default)."""
+def get_evidence_bundle(
+    full: bool = typer.Option(False, "--full"),
+    project: str | None = typer.Option(None, "--project"),
+) -> None:
+    """Return the persisted or session Evidence bundle (summary by default)."""
+    from ..application.evidence_store import discover_store
     from ..application.workflows import get_evidence_bundle as _bundle
 
-    session, config = _session()
+    store = discover_store(project=project)
+    records = None
+    if store.source != "missing":
+        loaded = store.load()
+        if not loaded.ok:
+            fail(loaded.error)
+        records = loaded.value
+    session, config = _session(records)
     emit_json(_bundle(session, full=full, budget_bytes=config.mcp_max_response_bytes))
 
 
@@ -2473,11 +2538,17 @@ def verify_reconstruction(
 @app.command("verify-unknown-resolution")
 def verify_unknown_resolution(
     unknown_id: str = typer.Option(..., "--unknown-id"),
+    project: str | None = typer.Option(None, "--project"),
 ) -> None:
     """Verify an unknown's resolution status."""
+    from ..application.evidence_store import discover_store
     from ..application.workflows import verify_unknown_resolution as _verify
 
-    session, _config = _session()
+    store = discover_store(project=project)
+    loaded = store.load()
+    if not loaded.ok:
+        fail(loaded.error)
+    session, _config = _session(loaded.value)
     emit_json(_verify(session, unknown_id))
 
 
@@ -2977,12 +3048,93 @@ def compare_artifacts(
 
 
 @app.command("export-evidence-bundle")
-def export_evidence_bundle(path: str = typer.Option(..., "--path")) -> None:
-    """Alias for Evidence bundle export."""
-    session, _config = _session()
+def export_evidence_bundle(
+    path: str = typer.Option(..., "--path"),
+    project: str | None = typer.Option(None, "--project"),
+) -> None:
+    """Export the persisted or session Evidence bundle."""
+    from ..application.evidence_store import discover_store
+
+    store = discover_store(project=project)
+    records = None
+    if store.source != "missing":
+        loaded = store.load()
+        if not loaded.ok:
+            fail(loaded.error)
+        records = loaded.value
+    session, _config = _session(records)
     bundle = session.export_bundle()
     Path(path).write_text(json.dumps(bundle, indent=2), encoding="utf-8")
-    emit_json({"path": path, "record_count": len(bundle.get("records", []))})
+    emit_json(
+        {
+            "path": path,
+            "record_count": len(bundle.get("records", [])),
+            "source": store.source,
+            "store": str(store.path),
+        }
+    )
+
+
+@app.command("evidence-get")
+def evidence_get(
+    evidence_id: str = typer.Argument(...),
+    project: str | None = typer.Option(None, "--project"),
+) -> None:
+    """Return one persisted Evidence record by ID."""
+    from ..application.evidence_store import discover_store
+
+    store = discover_store(project=project)
+    loaded = store.load()
+    if not loaded.ok:
+        fail(loaded.error)
+    record = loaded.value.ledger.get(evidence_id)
+    if record is None:
+        fail(
+            AnalysisInputError(
+                operation="evidence-get",
+                message=f"Evidence not found: {evidence_id}",
+                details={"project": None if store.project is None else str(store.project)},
+            )
+        )
+    emit_json(record.model_dump())
+
+
+@app.command("evidence-list")
+def evidence_list(
+    project: str | None = typer.Option(None, "--project"),
+    target: str | None = typer.Option(None, "--target"),
+    operation: str | None = typer.Option(None, "--operation"),
+    limit: int = typer.Option(100, "--limit", min=1, max=10000),
+) -> None:
+    """List persisted Evidence summaries by target/operation."""
+    from ..application.analysis_view import summarize_record
+    from ..application.evidence_store import discover_store
+
+    store = discover_store(project=project)
+    loaded = store.load()
+    if not loaded.ok:
+        fail(loaded.error)
+    wanted_target = None
+    if target:
+        wanted_target = str(Path(target).expanduser().resolve())
+    rows = []
+    for record in loaded.value.ledger.records():
+        if operation is not None and record.operation != operation:
+            continue
+        if wanted_target is not None:
+            local_path = None if record.subject is None else record.subject.local_path
+            if local_path != wanted_target:
+                continue
+        rows.append(summarize_record(record.model_dump()))
+    emit_json(
+        {
+            "project": None if store.project is None else str(store.project),
+            "store": str(store.path),
+            "source": store.source,
+            "count": len(rows),
+            "records": rows[:limit],
+        }
+    )
 
 
 @app.command("import-evidence-bundle")
@@ -3494,10 +3646,20 @@ def evidence_import(source: str = typer.Argument(...)) -> None:
 
 @app.command("inspect-java-archive")
 def inspect_java_archive(
-    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+    path: str = typer.Argument(...),
+    nested: bool = typer.Option(False, "--nested", help="Expand nested JAR/WAR/EAR entries."),
+    multi_release: bool = typer.Option(
+        False, "--multi-release", help="List META-INF/versions entries separately."
+    ),
+    provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
     """Java archive class inventory."""
-    _run("inspect_java_archive", path, provider, {})
+    _run(
+        "inspect_java_archive",
+        path,
+        provider,
+        {"nested": nested, "multi_release": multi_release},
+    )
 
 
 @app.command("inspect-java-class")
@@ -3522,10 +3684,12 @@ def search_java_classes(
 
 @app.command("decompile-java-class")
 def decompile_java_class(
-    path: str = typer.Argument(...), provider: str | None = typer.Option(None, "--provider")
+    path: str = typer.Argument(...),
+    decompiler: str = typer.Option("auto", "--decompiler", help="auto, vineflower, or cfr"),
+    provider: str | None = typer.Option(None, "--provider"),
 ) -> None:
-    """Java decompilation via Vineflower."""
-    _run("decompile_java_class", path, provider, {})
+    """Java decompilation via Vineflower or CFR."""
+    _run("decompile_java_class", path, provider, {"decompiler": decompiler})
 
 
 @app.command("project-create")

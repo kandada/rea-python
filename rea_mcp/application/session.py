@@ -222,7 +222,7 @@ class BinarySession:
         observation = EvidenceObservation(
             operation=operation,
             result=execution.result,
-            parameters=parameters,
+            parameters={**parameters, **(execution.resolved_parameters or {})},
             raw_result=execution.raw_result,
             analysis_profile=execution.analysis_profile or (active.profile if active else None),
             limitations=list(execution.limitations),

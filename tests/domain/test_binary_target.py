@@ -62,3 +62,19 @@ def test_asar_extension_detection(tmp_path: Path) -> None:
     result = parse_binary_target(path)
     assert result.ok
     assert result.value.format == "asar"
+
+
+def test_detect_java_class_vs_macho_fat() -> None:
+    java = b"\xca\xfe\xba\xbe\x00\x00\x00\x34"
+    assert detect_format(java)[0] == "java-class"
+    fat = b"\xca\xfe\xba\xbe\x00\x00\x00\x02" + b"\x00" * 16
+    assert detect_format(fat)[0] == "mach-o-universal"
+
+
+def test_parse_java_class_format(tmp_path: Path) -> None:
+    path = tmp_path / "Main.class"
+    path.write_bytes(b"\xca\xfe\xba\xbe\x00\x00\x00\x34" + b"\x00" * 8)
+    result = parse_binary_target(path)
+    assert result.ok
+    assert result.value.format == "java-class"
+    assert result.value.kind == "object"

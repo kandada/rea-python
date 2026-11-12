@@ -1031,8 +1031,15 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return _analysis(session, "inspect_model_artifact", path, {"hash": hash})
 
     @server.tool(name="inspect_java_archive", description="Java JAR/WAR class inventory.")
-    def inspect_java_archive(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "inspect_java_archive", path, {})
+    def inspect_java_archive(
+        path: str | None = None, nested: bool = False, multi_release: bool = False
+    ) -> dict[str, Any]:
+        return _analysis(
+            session,
+            "inspect_java_archive",
+            path,
+            {"nested": nested, "multi_release": multi_release},
+        )
 
     @server.tool(name="inspect_java_class", description="Java class metadata.")
     def inspect_java_class(
@@ -1044,9 +1051,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
     def search_java_classes(query: str, path: str | None = None) -> dict[str, Any]:
         return _analysis(session, "search_java_classes", path, {"query": query})
 
-    @server.tool(name="decompile_java_class", description="Java decompilation via Vineflower.")
-    def decompile_java_class(path: str | None = None) -> dict[str, Any]:
-        return _analysis(session, "decompile_java_class", path, {})
+    @server.tool(
+        name="decompile_java_class", description="Java decompilation via Vineflower or CFR."
+    )
+    def decompile_java_class(path: str | None = None, decompiler: str = "auto") -> dict[str, Any]:
+        return _analysis(session, "decompile_java_class", path, {"decompiler": decompiler})
 
     @server.tool(name="inspect_erlang_beam", description="Erlang BEAM IFF chunks and atoms.")
     def inspect_erlang_beam(path: str | None = None) -> dict[str, Any]:
@@ -1326,10 +1335,11 @@ def build_mcp_server(session: BinarySession, config: AppConfig | None = None) ->
         return written.value
 
     @server.tool(name="update", description="Report the installed version and guidance.")
-    def update() -> dict[str, Any]:
+    def update(check: bool = False) -> dict[str, Any]:
         from .. import __version__
+        from ..application.updater import update_report
 
-        return {"current_version": __version__, "channel": "source"}
+        return update_report(__version__, check=check)
 
     @server.tool(name="record_unknown", description="Record an unresolved investigation question.")
     def record_unknown(

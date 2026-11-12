@@ -58,6 +58,7 @@ class AnalysisExecution:
     locations: tuple[EvidenceLocation | dict[str, Any], ...] = ()
     subject: Any | None = None
     cacheable: bool = True
+    resolved_parameters: dict[str, Any] | None = None
 
 
 class AnalysisProvider(ABC):

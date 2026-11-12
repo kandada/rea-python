@@ -87,8 +87,12 @@ async def _call_tool_with_tiny_budget(path: str) -> str:
         return str(result)
 
 
-def test_stdio_tool_result_budget_returns_envelope() -> None:
-    message = asyncio.run(asyncio.wait_for(_call_tool_with_tiny_budget(sys.executable), timeout=60))
+def test_stdio_tool_result_budget_returns_envelope(tmp_path: Path) -> None:
+    from tests.conftest import build_elf
+
+    target = tmp_path / "many-sections.elf"
+    target.write_bytes(build_elf({f".section{i}": b"x" * 32 for i in range(40)}))
+    message = asyncio.run(asyncio.wait_for(_call_tool_with_tiny_budget(str(target)), timeout=60))
     assert "RESOURCE_CONSTRAINT" in message
     assert "evidence_reference" in message
     assert "ev_" in message
