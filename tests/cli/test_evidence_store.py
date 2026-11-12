@@ -143,7 +143,7 @@ def test_unknown_store_missing_source_is_explicit(tmp_path: Path, monkeypatch) -
     assert payload["count"] == 0
     assert payload["source"] == "missing"
     assert payload["project"] is None
-    assert payload["store"].endswith("/.rea/evidence.json")
+    assert Path(payload["store"]) == tmp_path / ".rea/evidence.json"
 
 
 def test_nearest_project_and_invalid_store(tmp_path: Path) -> None:

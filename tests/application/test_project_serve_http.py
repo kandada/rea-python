@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
-import socket
-import subprocess
-import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -13,23 +10,18 @@ from pathlib import Path
 
 import pytest
 
+from rea_mcp.application.project_serve import create_project_server
 from rea_mcp.application.project_store import create_project
 
 
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-def _wait(url: str, timeout: float = 10.0) -> None:
+def _wait(url: str, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             urllib.request.urlopen(url, timeout=0.5).read()
             return
         except (OSError, urllib.error.URLError):
-            time.sleep(0.1)
+            time.sleep(0.05)
     raise AssertionError(f"server did not start: {url}")
 
 
@@ -63,21 +55,10 @@ def test_project_dashboard_http_endpoints(tmp_path: Path) -> None:
     assert created.ok
     store = created.value
     asked = store.ask("Which entry point?")
-    port = _free_port()
-    root = Path(__file__).resolve().parents[2]
-    env = {**os.environ, "PYTHONPATH": str(root)}
-    code = (
-        "from rea_mcp.application.project_serve import serve_projects;"
-        f"serve_projects({str(tmp_path)!r}, host='127.0.0.1', port={port})"
-    )
-    process = subprocess.Popen(
-        [sys.executable, "-c", code],
-        cwd=str(root),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    base = f"http://127.0.0.1:{port}"
+    server = create_project_server(tmp_path, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         _wait(f"{base}/api/projects")
         projects = json.loads(_get(f"{base}/api/projects"))
@@ -105,9 +86,6 @@ def test_project_dashboard_http_endpoints(tmp_path: Path) -> None:
             _get(f"{base}/project?{urllib.parse.urlencode({'path': str(tmp_path / 'missing')})}")
         assert missing.value.code == 404
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

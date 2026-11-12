@@ -89,9 +89,7 @@ def _page(root: Path) -> str:
     )
 
 
-def serve_projects(root: str | Path, *, host: str = "127.0.0.1", port: int = 18766) -> None:
-    base = Path(root).expanduser().resolve()
-
+def _handler_class(base: Path) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -200,7 +198,18 @@ def serve_projects(root: str | Path, *, host: str = "127.0.0.1", port: int = 187
         def log_message(self, *args: object) -> None:
             del args
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    return Handler
+
+
+def create_project_server(
+    root: str | Path, *, host: str = "127.0.0.1", port: int = 18766
+) -> ThreadingHTTPServer:
+    base = Path(root).expanduser().resolve()
+    return ThreadingHTTPServer((host, port), _handler_class(base))
+
+
+def serve_projects(root: str | Path, *, host: str = "127.0.0.1", port: int = 18766) -> None:
+    server = create_project_server(root, host=host, port=port)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"rea-python projects: http://{host}:{port}/")
@@ -212,4 +221,4 @@ def serve_projects(root: str | Path, *, host: str = "127.0.0.1", port: int = 187
         server.shutdown()
 
 
-__all__ = ["serve_projects"]
+__all__ = ["create_project_server", "serve_projects"]
